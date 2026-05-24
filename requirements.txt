@@ -1,0 +1,25 @@
+# ─────────────────────────────────────────────
+# Telegram Bot — requirements.txt
+# Python 3.11+ required
+# ─────────────────────────────────────────────
+
+# Telegram bot framework (with job-queue support)
+python-telegram-bot[job-queue]==21.6
+
+# Google Gemini AI SDK
+google-genai==0.8.0
+
+# HTTP client for async image generation
+aiohttp==3.9.5
+
+# Image processing for upscaler
+Pillow==10.4.0
+
+# Web server for Render health checks
+Flask==3.0.3
+
+# Environment variable loading
+python-dotenv==1.0.1
+
+# Async support utilities
+asyncio-throttle==1.0.2
