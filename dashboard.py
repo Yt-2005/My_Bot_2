@@ -12,10 +12,6 @@ from flask import Flask, render_template_string, request, session, redirect, url
 import threading
 
 
-def html_response(content):
-    """Return proper HTML response."""
-    return Response(content, mimetype='text/html; charset=utf-8')
-
 logger = logging.getLogger(__name__)
 
 # ── Import bot's telegram app reference (set by bot.py) ──
@@ -216,9 +212,10 @@ tr:hover td { background: var(--surface2); }
   font-weight: 700;
   font-family: 'Space Mono', monospace;
 }
-.badge-green { background: rgba(68,255,136,0.1); color: var(--accent3); border: 1px solid rgba(68,255,136,0.2); }
-.badge-red   { background: rgba(255,68,102,0.1); color: var(--danger);  border: 1px solid rgba(255,68,102,0.2); }
-.badge-purple{ background: rgba(124,106,255,0.1); color: var(--accent); border: 1px solid rgba(124,106,255,0.2); }
+.badge-green  { background: rgba(68,255,136,0.1); color: var(--accent3); border: 1px solid rgba(68,255,136,0.2); }
+.badge-red    { background: rgba(255,68,102,0.1); color: var(--danger);  border: 1px solid rgba(255,68,102,0.2); }
+.badge-purple { background: rgba(124,106,255,0.1); color: var(--accent); border: 1px solid rgba(124,106,255,0.2); }
+.badge-pink   { background: rgba(255,106,138,0.1); color: var(--accent2); border: 1px solid rgba(255,106,138,0.2); }
 /* Buttons */
 .btn {
   padding: 8px 16px;
@@ -297,19 +294,19 @@ tr:hover td { background: var(--surface2); }
     <h1>🤖 BotAdmin</h1>
     <p>CONTROL PANEL</p>
   </div>
-  <a href="/admin" class="nav-item {% if page=='dashboard' %}active{% endif %}">
+  <a href="/admin" class="nav-item {% if page == 'dashboard' %}active{% endif %}">
     <span class="icon">📊</span><span>Dashboard</span>
   </a>
-  <a href="/admin/users" class="nav-item {% if page=='users' %}active{% endif %}">
+  <a href="/admin/users" class="nav-item {% if page == 'users' %}active{% endif %}">
     <span class="icon">👥</span><span>Users</span>
   </a>
-  <a href="/admin/stats" class="nav-item {% if page=='stats' %}active{% endif %}">
+  <a href="/admin/stats" class="nav-item {% if page == 'stats' %}active{% endif %}">
     <span class="icon">💰</span><span>Expenses</span>
   </a>
-  <a href="/admin/broadcast" class="nav-item {% if page=='broadcast' %}active{% endif %}">
+  <a href="/admin/broadcast" class="nav-item {% if page == 'broadcast' %}active{% endif %}">
     <span class="icon">📢</span><span>Broadcast</span>
   </a>
-  <a href="/admin/errors" class="nav-item {% if page=='errors' %}active{% endif %}">
+  <a href="/admin/errors" class="nav-item {% if page == 'errors' %}active{% endif %}">
     <span class="icon">⚠️</span><span>Error Logs</span>
   </a>
   <div class="nav-logout">
@@ -317,25 +314,13 @@ tr:hover td { background: var(--surface2); }
   </div>
 </div>
 <div class="main">
-{% endif %}
   {{ content }}
-{% if logged_in %}
 </div>
+{% else %}
+  {{ content }}
 {% endif %}
 </body>
 </html>"""
-
-def render_page(content, page="", logged_in=True):
-    from flask import Markup
-    html = BASE_HTML.replace("{{ content }}", content)
-    html = html.replace("{% if logged_in %}", "" if logged_in else "<!--")
-    html = html.replace("{% endif %}", "" if logged_in else "-->")
-    html = html.replace("{% if page=='dashboard' %}", "")
-    for p in ["dashboard","users","stats","broadcast","errors"]:
-        html = html.replace(f"{{% if page=='{p}' %}}", "")
-        html = html.replace(f"active{{% endif %}}", f"{'active' if page==p else ''}")
-    # Simple template replacement
-    return html
 
 
 # ────────────────────────────────────────────────────────────────
@@ -347,12 +332,6 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
     global DASHBOARD_PASSWORD
     DASHBOARD_PASSWORD = password
 
-    @flask_app.after_request
-    def set_html_type(response):
-        if response.status_code == 200 and b'<!DOCTYPE html>' in response.get_data()[:50]:
-            response.headers['Content-Type'] = 'text/html; charset=utf-8'
-        return response
-
     # ── LOGIN ──
     @flask_app.route("/admin/login", methods=["GET", "POST"])
     def admin_login():
@@ -362,21 +341,21 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
                 session["logged_in"] = True
                 return redirect("/admin")
             error = "Wrong password!"
-        content = f"""
+        content = """
         <div class="login-wrap">
           <div class="login-box">
             <h1>🤖 Bot Admin</h1>
             <p>Enter admin password to continue</p>
-            {'<div class="alert alert-error">' + error + '</div>' if error else ''}
+            %s
             <form method="POST">
               <div class="form-group">
                 <label class="form-label">Password</label>
                 <input type="password" name="password" class="form-input" placeholder="••••••••" autofocus>
               </div>
-              <button type="submit" class="btn btn-primary" style="width:100%">Login →</button>
+              <button type="submit" class="btn btn-primary" style="width:100%%">Login →</button>
             </form>
           </div>
-        </div>"""
+        </div>""" % ('<div class="alert alert-error">' + error + '</div>' if error else '')
         return render_template_string(BASE_HTML, content=content, logged_in=False, page="")
 
     # ── LOGOUT ──
@@ -486,7 +465,7 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
               <td><span class="badge badge-{'green' if u['language']=='km' else 'purple'}">{u['language'].upper()}</span></td>
               <td style='text-align:center'>{u['expense_count']}</td>
               <td style='text-align:center'>{u['note_count']}</td>
-              <td><span class="badge badge-{'green' if not u['daily_reminder'] else 'purple'}">{'ON' if u['daily_reminder'] else 'OFF'}</span></td>
+              <td><span class="badge badge-{'purple' if u['daily_reminder'] else 'green'}">{'ON' if u['daily_reminder'] else 'OFF'}</span></td>
               <td style='color:var(--muted);font-size:11px'>{u['created_at'][:10]}</td>
               <td>
                 {'<a href="/admin/unban/'+str(u["user_id"])+'" class="btn btn-success btn-sm">Unban</a>' if u['user_id'] in banned_ids else '<a href="/admin/ban/'+str(u["user_id"])+'" class="btn btn-danger btn-sm">Ban</a>'}
