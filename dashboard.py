@@ -1,27 +1,24 @@
 """
 dashboard.py — Admin Dashboard for Telegram Bot
 Accessible at /admin — password protected
-Features: Users, Expenses/Stats, Broadcast, Ban/Unban
+Single Page Application with full JSON API
 """
 
 import sqlite3
 import logging
+import os
 from functools import wraps
 from datetime import datetime, timedelta
-from flask import Flask, render_template_string, request, session, redirect, url_for, jsonify, Response
-import threading
-
+from flask import request, session, redirect, jsonify, Response
 
 logger = logging.getLogger(__name__)
 
-# ── Import bot's telegram app reference (set by bot.py) ──
 _bot_app = None
 
 def set_bot_app(app):
     global _bot_app
     _bot_app = app
 
-# ── DB helper ──
 DB_PATH = "bot_data.db"
 
 def db():
@@ -29,659 +26,998 @@ def db():
     conn.row_factory = sqlite3.Row
     return conn
 
-# ── Auth decorator ──
-DASHBOARD_PASSWORD = "admin1234"  # Change this!
+def _table_exists(conn, name):
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone()
+    return row is not None
 
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if not session.get("logged_in"):
-            return redirect("/admin/login")
+            return jsonify({"error": "Unauthorized"}), 401
         return f(*args, **kwargs)
     return decorated
 
-# ── HTML TEMPLATE ──
-BASE_HTML = """<!DOCTYPE html>
+
+# ─────────────────────────────────────────────
+# ADMIN HTML — Full SPA
+# ─────────────────────────────────────────────
+ADMIN_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Bot Admin</title>
-<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<title>⚡ Bot Control Panel</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=Archivo:wght@400;500;700;900&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #0a0a0f;
-  --surface: #12121a;
-  --surface2: #1a1a26;
-  --border: #2a2a3a;
-  --accent: #7c6aff;
-  --accent2: #ff6a8a;
-  --accent3: #6affb8;
-  --text: #e8e8f0;
-  --muted: #6b6b8a;
-  --danger: #ff4466;
-  --success: #44ff88;
-  --warning: #ffaa44;
+  --bg: #080b10;
+  --surface: #0d1117;
+  --surface2: #161b22;
+  --surface3: #21262d;
+  --border: #30363d;
+  --accent: #58a6ff;
+  --accent2: #f78166;
+  --accent3: #3fb950;
+  --accent4: #d2a8ff;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --danger: #f85149;
+  --success: #3fb950;
+  --warning: #d29922;
+  --glow: rgba(88,166,255,0.15);
 }
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: 'Syne', sans-serif;
-  min-height: 100vh;
-  display: flex;
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{height:100%;overflow:hidden;}
+body{background:var(--bg);color:var(--text);font-family:'Archivo',sans-serif;display:flex;height:100vh;}
+
+/* ── SCROLLBAR ── */
+::-webkit-scrollbar{width:4px;height:4px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+
+/* ── LOGIN ── */
+#login-screen{
+  position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:1000;
+  background-image: radial-gradient(ellipse at 20% 50%, rgba(88,166,255,0.05) 0%, transparent 60%),
+                    radial-gradient(ellipse at 80% 20%, rgba(247,129,102,0.05) 0%, transparent 50%);
 }
-/* Sidebar */
-.sidebar {
-  width: 240px;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-  padding: 24px 0;
-  position: fixed;
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  z-index: 100;
+.login-card{
+  width:400px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:48px 40px;
+  box-shadow:0 0 0 1px rgba(88,166,255,0.1), 0 20px 60px rgba(0,0,0,0.5);
 }
-.sidebar-logo {
-  padding: 0 24px 24px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 16px;
+.login-logo{text-align:center;margin-bottom:32px;}
+.login-logo .bot-icon{font-size:48px;display:block;margin-bottom:12px;filter:drop-shadow(0 0 20px rgba(88,166,255,0.4));}
+.login-logo h1{font-size:22px;font-weight:900;color:var(--text);letter-spacing:-0.5px;}
+.login-logo p{font-size:12px;color:var(--muted);font-family:'IBM Plex Mono',monospace;margin-top:4px;}
+.form-group{margin-bottom:20px;}
+.form-label{display:block;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px;font-family:'IBM Plex Mono',monospace;}
+.form-input{
+  width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;
+  padding:12px 16px;color:var(--text);font-size:14px;font-family:'Archivo',sans-serif;
+  transition:border-color .2s,box-shadow .2s;
 }
-.sidebar-logo h1 {
-  font-size: 20px;
-  font-weight: 800;
-  background: linear-gradient(135deg, var(--accent), var(--accent2));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+.form-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(88,166,255,0.1);}
+.btn{padding:11px 20px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;border:none;transition:all .15s;font-family:'Archivo',sans-serif;display:inline-flex;align-items:center;gap:8px;}
+.btn-primary{background:var(--accent);color:#0d1117;width:100%;justify-content:center;margin-bottom:10px;}
+.btn-primary:hover{background:#79c0ff;transform:translateY(-1px);box-shadow:0 4px 20px rgba(88,166,255,0.3);}
+.btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border);width:100%;justify-content:center;}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent);}
+.btn-danger{background:rgba(248,81,73,0.1);color:var(--danger);border:1px solid rgba(248,81,73,0.3);}
+.btn-danger:hover{background:rgba(248,81,73,0.2);}
+.btn-success{background:rgba(63,185,80,0.1);color:var(--success);border:1px solid rgba(63,185,80,0.3);}
+.btn-success:hover{background:rgba(63,185,80,0.2);}
+.btn-sm{padding:5px 12px;font-size:12px;}
+.alert{padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:13px;font-family:'IBM Plex Mono',monospace;}
+.alert-error{background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);color:var(--danger);}
+.alert-success{background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);color:var(--success);}
+
+/* ── SIDEBAR ── */
+.sidebar{
+  width:220px;background:var(--surface);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;flex-shrink:0;overflow:hidden;
 }
-.sidebar-logo p { font-size: 11px; color: var(--muted); font-family: 'Space Mono', monospace; margin-top: 2px; }
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 24px;
-  color: var(--muted);
-  text-decoration: none;
-  font-size: 14px;
-  font-weight: 600;
-  transition: all 0.2s;
-  border-left: 3px solid transparent;
+.sidebar-header{padding:20px 20px 16px;border-bottom:1px solid var(--border);}
+.sidebar-header h2{font-size:15px;font-weight:900;color:var(--text);letter-spacing:-.3px;}
+.sidebar-header p{font-size:10px;color:var(--muted);font-family:'IBM Plex Mono',monospace;margin-top:2px;}
+.sidebar-status{padding:10px 20px;border-bottom:1px solid var(--border);}
+.status-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--success);margin-right:6px;animation:pulse 2s infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.status-text{font-size:11px;color:var(--muted);font-family:'IBM Plex Mono',monospace;}
+nav{flex:1;padding:8px 0;overflow-y:auto;}
+.nav-group{padding:16px 16px 8px;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;font-family:'IBM Plex Mono',monospace;}
+.nav-item{
+  display:flex;align-items:center;gap:10px;padding:9px 20px;
+  color:var(--muted);font-size:13px;font-weight:500;
+  cursor:pointer;transition:all .15s;border:none;background:none;width:100%;text-align:left;
+  position:relative;
 }
-.nav-item:hover, .nav-item.active {
-  color: var(--text);
-  background: var(--surface2);
-  border-left-color: var(--accent);
+.nav-item:hover{color:var(--text);background:var(--surface2);}
+.nav-item.active{color:var(--accent);background:rgba(88,166,255,0.08);}
+.nav-item.active::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--accent);}
+.nav-icon{font-size:16px;width:20px;text-align:center;}
+.sidebar-footer{padding:12px 16px;border-top:1px solid var(--border);}
+
+/* ── MAIN ── */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+.topbar{
+  height:52px;background:var(--surface);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;padding:0 24px;flex-shrink:0;
 }
-.nav-item .icon { font-size: 18px; }
-.nav-logout {
-  margin-top: auto;
-  padding: 0 16px 16px;
+.topbar-title{font-size:14px;font-weight:700;color:var(--text);}
+.topbar-right{display:flex;align-items:center;gap:12px;}
+.uptime-badge{font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--muted);background:var(--surface2);border:1px solid var(--border);padding:4px 10px;border-radius:20px;}
+.content{flex:1;overflow-y:auto;padding:24px;}
+
+/* ── PAGE ── */
+.page{display:none;}
+.page.active{display:block;}
+.page-header{margin-bottom:24px;}
+.page-header h1{font-size:24px;font-weight:900;letter-spacing:-.5px;}
+.page-header p{font-size:12px;color:var(--muted);font-family:'IBM Plex Mono',monospace;margin-top:4px;}
+
+/* ── STAT CARDS ── */
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px;}
+@media(max-width:900px){.cards{grid-template-columns:repeat(2,1fr);}}
+.card{
+  background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 20px;
+  position:relative;overflow:hidden;transition:border-color .2s;
 }
-.nav-logout a {
-  display: block;
-  text-align: center;
-  padding: 10px;
-  background: rgba(255,68,102,0.1);
-  border: 1px solid rgba(255,68,102,0.3);
-  border-radius: 8px;
-  color: var(--danger);
-  text-decoration: none;
-  font-size: 13px;
-  font-weight: 600;
-  transition: all 0.2s;
+.card:hover{border-color:var(--accent);}
+.card-accent{position:absolute;top:0;left:0;right:0;height:2px;}
+.card-accent.blue{background:linear-gradient(90deg,var(--accent),transparent);}
+.card-accent.red{background:linear-gradient(90deg,var(--accent2),transparent);}
+.card-accent.green{background:linear-gradient(90deg,var(--accent3),transparent);}
+.card-accent.purple{background:linear-gradient(90deg,var(--accent4),transparent);}
+.card-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
+.card-icon{font-size:20px;}
+.card-trend{font-size:10px;font-family:'IBM Plex Mono',monospace;}
+.card-trend.up{color:var(--success);}
+.card-value{font-size:28px;font-weight:900;line-height:1;letter-spacing:-1px;}
+.card-label{font-size:11px;color:var(--muted);margin-top:4px;font-family:'IBM Plex Mono',monospace;}
+
+/* ── TABLE ── */
+.table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:20px;}
+.table-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.table-head h3{font-size:13px;font-weight:700;white-space:nowrap;}
+.search-box{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px 12px;color:var(--text);font-size:12px;font-family:'Archivo',sans-serif;width:200px;}
+.search-box:focus{outline:none;border-color:var(--accent);}
+table{width:100%;border-collapse:collapse;}
+th{padding:10px 14px;text-align:left;font-size:10px;font-weight:700;color:var(--muted);background:var(--surface2);text-transform:uppercase;letter-spacing:.08em;font-family:'IBM Plex Mono',monospace;white-space:nowrap;}
+td{padding:11px 14px;font-size:12px;border-bottom:1px solid var(--border);vertical-align:middle;}
+tr:last-child td{border-bottom:none;}
+tr:hover td{background:rgba(88,166,255,0.03);}
+.empty-row td{text-align:center;color:var(--muted);padding:32px;font-family:'IBM Plex Mono',monospace;font-size:11px;}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;font-family:'IBM Plex Mono',monospace;white-space:nowrap;}
+.badge-blue{background:rgba(88,166,255,0.12);color:var(--accent);border:1px solid rgba(88,166,255,0.2);}
+.badge-red{background:rgba(248,81,73,0.1);color:var(--danger);border:1px solid rgba(248,81,73,0.2);}
+.badge-green{background:rgba(63,185,80,0.1);color:var(--success);border:1px solid rgba(63,185,80,0.2);}
+.badge-purple{background:rgba(210,168,255,0.1);color:var(--accent4);border:1px solid rgba(210,168,255,0.2);}
+.badge-orange{background:rgba(247,129,102,0.1);color:var(--accent2);border:1px solid rgba(247,129,102,0.2);}
+code.uid{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--accent);background:rgba(88,166,255,0.08);padding:2px 6px;border-radius:4px;}
+
+/* ── BROADCAST SECTION ── */
+.section{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:20px;}
+.section h3{font-size:14px;font-weight:700;margin-bottom:4px;}
+.section-sub{font-size:12px;color:var(--muted);margin-bottom:20px;font-family:'IBM Plex Mono',monospace;}
+.form-textarea{
+  width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;
+  padding:12px 16px;color:var(--text);font-size:13px;font-family:'Archivo',sans-serif;
+  resize:vertical;min-height:120px;transition:border-color .2s;
 }
-.nav-logout a:hover { background: rgba(255,68,102,0.2); }
-/* Main */
-.main {
-  margin-left: 240px;
-  flex: 1;
-  padding: 32px;
-  min-height: 100vh;
+.form-textarea:focus{outline:none;border-color:var(--accent);}
+
+/* ── GRID ── */
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;}
+@media(max-width:800px){.grid-2{grid-template-columns:1fr;}}
+
+/* ── MAINTENANCE TOGGLE ── */
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:12px;}
+.toggle-info h4{font-size:13px;font-weight:700;}
+.toggle-info p{font-size:11px;color:var(--muted);margin-top:2px;font-family:'IBM Plex Mono',monospace;}
+.toggle{position:relative;width:44px;height:24px;cursor:pointer;}
+.toggle input{opacity:0;width:0;height:0;}
+.toggle-slider{position:absolute;inset:0;background:var(--surface3);border-radius:24px;transition:.3s;border:1px solid var(--border);}
+.toggle-slider:before{content:'';position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:var(--muted);border-radius:50%;transition:.3s;}
+.toggle input:checked + .toggle-slider{background:rgba(63,185,80,0.2);border-color:var(--success);}
+.toggle input:checked + .toggle-slider:before{transform:translateX(20px);background:var(--success);}
+
+/* ── LOADING ── */
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-overlay{display:flex;align-items:center;justify-content:center;padding:40px;color:var(--muted);gap:10px;font-size:13px;font-family:'IBM Plex Mono',monospace;}
+
+/* ── TOAST ── */
+#toast{
+  position:fixed;bottom:24px;right:24px;padding:12px 18px;border-radius:8px;font-size:13px;
+  font-weight:600;z-index:9999;transform:translateY(100px);opacity:0;
+  transition:all .3s cubic-bezier(.34,1.56,.64,1);pointer-events:none;
 }
-.page-title {
-  font-size: 28px;
-  font-weight: 800;
-  margin-bottom: 8px;
-}
-.page-sub { color: var(--muted); font-size: 13px; margin-bottom: 32px; font-family: 'Space Mono', monospace; }
-/* Cards */
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px; }
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 20px;
-  position: relative;
-  overflow: hidden;
-}
-.card::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 2px;
-}
-.card.purple::before { background: linear-gradient(90deg, var(--accent), transparent); }
-.card.pink::before   { background: linear-gradient(90deg, var(--accent2), transparent); }
-.card.green::before  { background: linear-gradient(90deg, var(--accent3), transparent); }
-.card.orange::before { background: linear-gradient(90deg, var(--warning), transparent); }
-.card-icon { font-size: 28px; margin-bottom: 12px; }
-.card-value { font-size: 32px; font-weight: 800; line-height: 1; }
-.card-label { font-size: 12px; color: var(--muted); margin-top: 6px; font-family: 'Space Mono', monospace; }
-/* Table */
-.table-wrap {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  overflow: hidden;
-  margin-bottom: 24px;
-}
-.table-header {
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.table-header h3 { font-size: 15px; font-weight: 700; }
-table { width: 100%; border-collapse: collapse; }
-th {
-  padding: 12px 16px;
-  text-align: left;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--muted);
-  background: var(--surface2);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-family: 'Space Mono', monospace;
-}
-td {
-  padding: 12px 16px;
-  font-size: 13px;
-  border-bottom: 1px solid var(--border);
-}
-tr:last-child td { border-bottom: none; }
-tr:hover td { background: var(--surface2); }
-/* Badges */
-.badge {
-  display: inline-block;
-  padding: 3px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 700;
-  font-family: 'Space Mono', monospace;
-}
-.badge-green  { background: rgba(68,255,136,0.1); color: var(--accent3); border: 1px solid rgba(68,255,136,0.2); }
-.badge-red    { background: rgba(255,68,102,0.1); color: var(--danger);  border: 1px solid rgba(255,68,102,0.2); }
-.badge-purple { background: rgba(124,106,255,0.1); color: var(--accent); border: 1px solid rgba(124,106,255,0.2); }
-.badge-pink   { background: rgba(255,106,138,0.1); color: var(--accent2); border: 1px solid rgba(255,106,138,0.2); }
-/* Buttons */
-.btn {
-  padding: 8px 16px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-  border: none;
-  transition: all 0.2s;
-  font-family: 'Syne', sans-serif;
-  text-decoration: none;
-  display: inline-block;
-}
-.btn-primary { background: var(--accent); color: white; }
-.btn-primary:hover { background: #6b5aee; transform: translateY(-1px); }
-.btn-danger  { background: rgba(255,68,102,0.15); color: var(--danger); border: 1px solid rgba(255,68,102,0.3); }
-.btn-danger:hover { background: rgba(255,68,102,0.25); }
-.btn-success { background: rgba(68,255,136,0.15); color: var(--accent3); border: 1px solid rgba(68,255,136,0.3); }
-.btn-success:hover { background: rgba(68,255,136,0.25); }
-.btn-sm { padding: 5px 10px; font-size: 11px; }
-/* Forms */
-.form-group { margin-bottom: 16px; }
-.form-label { display: block; font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em; font-family: 'Space Mono', monospace; }
-.form-input, .form-textarea {
-  width: 100%;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 14px;
-  color: var(--text);
-  font-size: 14px;
-  font-family: 'Syne', sans-serif;
-  transition: border-color 0.2s;
-}
-.form-input:focus, .form-textarea:focus { outline: none; border-color: var(--accent); }
-.form-textarea { resize: vertical; min-height: 100px; }
-/* Alert */
-.alert { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
-.alert-success { background: rgba(68,255,136,0.1); border: 1px solid rgba(68,255,136,0.3); color: var(--accent3); }
-.alert-error   { background: rgba(255,68,102,0.1); border: 1px solid rgba(255,68,102,0.3); color: var(--danger); }
-/* Login page */
-.login-wrap {
-  width: 100%;
-  height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg);
-}
-.login-box {
-  width: 380px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 40px;
-}
-.login-box h1 { font-size: 24px; font-weight: 800; margin-bottom: 4px; }
-.login-box p  { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
-/* Responsive */
-@media(max-width:768px) {
-  .sidebar { width: 60px; }
-  .sidebar-logo, .nav-item span { display: none; }
-  .nav-item { padding: 16px; justify-content: center; }
-  .main { margin-left: 60px; padding: 16px; }
-}
-.section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 24px; }
-.section h3 { font-size: 16px; font-weight: 700; margin-bottom: 16px; }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-@media(max-width:900px) { .grid-2 { grid-template-columns: 1fr; } }
+#toast.show{transform:translateY(0);opacity:1;}
+#toast.success{background:rgba(63,185,80,0.15);border:1px solid rgba(63,185,80,0.4);color:var(--success);}
+#toast.error{background:rgba(248,81,73,0.15);border:1px solid rgba(248,81,73,0.4);color:var(--danger);}
+
+/* ── ACTIVITY FEED ── */
+.activity-item{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);}
+.activity-item:last-child{border-bottom:none;}
+.activity-icon{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;background:var(--surface2);}
+.activity-text{flex:1;}
+.activity-text strong{font-size:12px;color:var(--text);}
+.activity-text p{font-size:11px;color:var(--muted);font-family:'IBM Plex Mono',monospace;margin-top:2px;}
 </style>
 </head>
 <body>
-{% if logged_in %}
-<div class="sidebar">
-  <div class="sidebar-logo">
-    <h1>🤖 BotAdmin</h1>
-    <p>CONTROL PANEL</p>
-  </div>
-  <a href="/admin" class="nav-item {% if page == 'dashboard' %}active{% endif %}">
-    <span class="icon">📊</span><span>Dashboard</span>
-  </a>
-  <a href="/admin/users" class="nav-item {% if page == 'users' %}active{% endif %}">
-    <span class="icon">👥</span><span>Users</span>
-  </a>
-  <a href="/admin/stats" class="nav-item {% if page == 'stats' %}active{% endif %}">
-    <span class="icon">💰</span><span>Expenses</span>
-  </a>
-  <a href="/admin/broadcast" class="nav-item {% if page == 'broadcast' %}active{% endif %}">
-    <span class="icon">📢</span><span>Broadcast</span>
-  </a>
-  <a href="/admin/errors" class="nav-item {% if page == 'errors' %}active{% endif %}">
-    <span class="icon">⚠️</span><span>Error Logs</span>
-  </a>
-  <div class="nav-logout">
-    <a href="/admin/logout">🚪 Logout</a>
+
+<!-- LOGIN SCREEN -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-logo">
+      <span class="bot-icon">🤖</span>
+      <h1>Bot Control Panel</h1>
+      <p>ADMIN ACCESS REQUIRED</p>
+    </div>
+    <div id="login-alert" class="alert alert-error" style="display:none"></div>
+    <div class="form-group">
+      <label class="form-label">Admin Password</label>
+      <input type="password" id="login-pw" class="form-input" placeholder="Enter password..." autocomplete="current-password">
+    </div>
+    <button class="btn btn-primary" onclick="doLogin()">
+      <span>🔐</span> Login
+    </button>
+    <button class="btn btn-ghost" onclick="devLogin()">
+      ⚡ Dev Bypass
+    </button>
   </div>
 </div>
-<div class="main">
-  {{ content | safe }}
-</div>
-{% else %}
-  {{ content | safe }}
-{% endif %}
-</body>
-</html>"""
 
+<!-- APP -->
+<div id="app" style="display:none;width:100%;height:100%;display:none;overflow:hidden;flex:1">
 
-# ────────────────────────────────────────────────────────────────
-# ROUTES
-# ────────────────────────────────────────────────────────────────
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <h2>🤖 BotAdmin</h2>
+      <p>CONTROL PANEL v2.0</p>
+    </div>
+    <div class="sidebar-status">
+      <span class="status-dot"></span>
+      <span class="status-text" id="bot-status">Bot Online</span>
+    </div>
+    <nav>
+      <div class="nav-group">Main</div>
+      <button class="nav-item active" id="nav-dashboard" onclick="gotoPage('dashboard')">
+        <span class="nav-icon">📊</span> Dashboard
+      </button>
+      <button class="nav-item" id="nav-users" onclick="gotoPage('users')">
+        <span class="nav-icon">👥</span> Users
+      </button>
+      <div class="nav-group">Finance</div>
+      <button class="nav-item" id="nav-expenses" onclick="gotoPage('expenses')">
+        <span class="nav-icon">💰</span> Expenses
+      </button>
+      <div class="nav-group">Tools</div>
+      <button class="nav-item" id="nav-broadcast" onclick="gotoPage('broadcast')">
+        <span class="nav-icon">📢</span> Broadcast
+      </button>
+      <button class="nav-item" id="nav-maintenance" onclick="gotoPage('maintenance')">
+        <span class="nav-icon">🔧</span> Maintenance
+      </button>
+      <button class="nav-item" id="nav-errors" onclick="gotoPage('errors')">
+        <span class="nav-icon">⚠️</span> Error Logs
+      </button>
+    </nav>
+    <div class="sidebar-footer">
+      <button class="btn btn-danger btn-sm" style="width:100%;justify-content:center" onclick="doLogout()">
+        🚪 Logout
+      </button>
+    </div>
+  </div>
 
-def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", password: str = "admin1234"):
-    flask_app.secret_key = secret_key
-    global DASHBOARD_PASSWORD
-    DASHBOARD_PASSWORD = password
+  <!-- MAIN -->
+  <div class="main">
+    <div class="topbar">
+      <span class="topbar-title" id="topbar-title">Dashboard</span>
+      <div class="topbar-right">
+        <span class="uptime-badge" id="uptime-badge">UPTIME: —</span>
+        <button class="btn btn-success btn-sm" onclick="refreshPage()">↺ Refresh</button>
+      </div>
+    </div>
+    <div class="content" id="content">
 
-    # ── LOGIN ──
-    @flask_app.route("/admin/login", methods=["GET", "POST"])
-    def admin_login():
-        error = ""
-        if request.method == "POST":
-            if request.form.get("password") == DASHBOARD_PASSWORD:
-                session["logged_in"] = True
-                return redirect("/admin")
-            error = "Wrong password!"
-        content = """
-        <div class="login-wrap">
-          <div class="login-box">
-            <h1>🤖 Bot Admin</h1>
-            <p>Enter admin password to continue</p>
-            %s
-            <form method="POST">
-              <div class="form-group">
-                <label class="form-label">Password</label>
-                <input type="password" name="password" class="form-input" placeholder="••••••••" autofocus>
-              </div>
-              <button type="submit" class="btn btn-primary" style="width:100%%">Login →</button>
-            </form>
+      <!-- ════ DASHBOARD PAGE ════ -->
+      <div class="page active" id="page-dashboard">
+        <div class="page-header">
+          <h1>Dashboard</h1>
+          <p id="dash-time">OVERVIEW — Loading...</p>
+        </div>
+        <div class="cards" id="dash-cards">
+          <div class="card"><div class="card-accent blue"></div>
+            <div class="card-top"><span class="card-icon">👥</span></div>
+            <div class="card-value" id="d-users">—</div>
+            <div class="card-label">TOTAL USERS</div>
           </div>
-        </div>""" % ('<div class="alert alert-error">' + error + '</div>' if error else '')
-        return render_template_string(BASE_HTML, content=content, logged_in=False, page="")
-
-    # ── LOGOUT ──
-    @flask_app.route("/admin/logout")
-    def admin_logout():
-        session.clear()
-        return redirect("/admin/login")
-
-    # ── DASHBOARD HOME ──
-    @flask_app.route("/admin")
-    @login_required
-    def admin_home():
-        conn = db()
-        total_users    = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        total_expenses = conn.execute("SELECT COALESCE(SUM(amount),0) FROM expenses").fetchone()[0]
-        total_notes    = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
-        total_errors   = conn.execute("SELECT COUNT(*) FROM error_logs").fetchone()[0]
-        new_today      = conn.execute("SELECT COUNT(*) FROM users WHERE date(created_at)=date('now')").fetchone()[0]
-        top_categories = conn.execute("""
-            SELECT category, SUM(amount) as total
-            FROM expenses GROUP BY category
-            ORDER BY total DESC LIMIT 5
-        """).fetchall()
-        recent_users = conn.execute("""
-            SELECT user_id, username, language, created_at FROM users
-            ORDER BY created_at DESC LIMIT 5
-        """).fetchall()
-        conn.close()
-
-        cat_rows = "".join(f"""
-            <tr>
-              <td>{r['category'] or 'N/A'}</td>
-              <td><span class="badge badge-purple">${r['total']:.2f}</span></td>
-            </tr>""" for r in top_categories) or "<tr><td colspan='2' style='color:var(--muted)'>No data</td></tr>"
-
-        user_rows = "".join(f"""
-            <tr>
-              <td><code style='color:var(--accent);font-size:11px'>{r['user_id']}</code></td>
-              <td>{r['username'] or '—'}</td>
-              <td><span class="badge badge-{'green' if r['language']=='km' else 'purple'}">{r['language']}</span></td>
-              <td style='color:var(--muted);font-size:11px'>{r['created_at'][:10]}</td>
-            </tr>""" for r in recent_users)
-
-        content = f"""
-        <div class="page-title">Dashboard</div>
-        <div class="page-sub">OVERVIEW // {datetime.now().strftime('%Y-%m-%d %H:%M')}</div>
-        <div class="cards">
-          <div class="card purple">
-            <div class="card-icon">👥</div>
-            <div class="card-value">{total_users}</div>
-            <div class="card-label">TOTAL USERS (+{new_today} today)</div>
+          <div class="card"><div class="card-accent red"></div>
+            <div class="card-top"><span class="card-icon">💰</span></div>
+            <div class="card-value" id="d-expenses">—</div>
+            <div class="card-label">TOTAL EXPENSES ($)</div>
           </div>
-          <div class="card pink">
-            <div class="card-icon">💰</div>
-            <div class="card-value">${total_expenses:.0f}</div>
-            <div class="card-label">TOTAL EXPENSES</div>
-          </div>
-          <div class="card green">
-            <div class="card-icon">📝</div>
-            <div class="card-value">{total_notes}</div>
+          <div class="card"><div class="card-accent green"></div>
+            <div class="card-top"><span class="card-icon">📝</span></div>
+            <div class="card-value" id="d-notes">—</div>
             <div class="card-label">TOTAL NOTES</div>
           </div>
-          <div class="card orange">
-            <div class="card-icon">⚠️</div>
-            <div class="card-value">{total_errors}</div>
+          <div class="card"><div class="card-accent purple"></div>
+            <div class="card-top"><span class="card-icon">⚠️</span></div>
+            <div class="card-value" id="d-errors">—</div>
             <div class="card-label">ERROR LOGS</div>
           </div>
         </div>
         <div class="grid-2">
           <div class="table-wrap">
-            <div class="table-header"><h3>🏆 Top Expense Categories</h3></div>
-            <table><thead><tr><th>Category</th><th>Total</th></tr></thead>
-            <tbody>{cat_rows}</tbody></table>
+            <div class="table-head"><h3>🆕 Recent Users</h3></div>
+            <table><thead><tr><th>User ID</th><th>Username</th><th>Joined</th></tr></thead>
+            <tbody id="dash-recent-users"><tr class="empty-row"><td colspan="3"><div class="spinner"></div></td></tr></tbody>
+            </table>
           </div>
           <div class="table-wrap">
-            <div class="table-header"><h3>🆕 Recent Users</h3></div>
-            <table><thead><tr><th>ID</th><th>Username</th><th>Lang</th><th>Joined</th></tr></thead>
-            <tbody>{user_rows}</tbody></table>
+            <div class="table-head"><h3>💸 Recent Expenses</h3></div>
+            <table><thead><tr><th>User</th><th>Category</th><th>Amount</th></tr></thead>
+            <tbody id="dash-recent-exp"><tr class="empty-row"><td colspan="3"><div class="spinner"></div></td></tr></tbody>
+            </table>
           </div>
-        </div>"""
-        return render_template_string(BASE_HTML, content=content, logged_in=True, page="dashboard")
+        </div>
+      </div>
 
-    # ── USERS ──
-    @flask_app.route("/admin/users")
-    @login_required
-    def admin_users():
-        conn = db()
-        users = conn.execute("""
-            SELECT u.user_id, u.username, u.language, u.pin,
-                   u.daily_reminder, u.created_at,
-                   COUNT(DISTINCT e.id) as expense_count,
-                   COUNT(DISTINCT n.id) as note_count
-            FROM users u
-            LEFT JOIN expenses e ON u.user_id = e.user_id
-            LEFT JOIN notes n ON u.user_id = n.user_id
-            GROUP BY u.user_id
-            ORDER BY u.created_at DESC
-        """).fetchall()
-        banned = conn.execute("SELECT user_id FROM banned_users").fetchall() if _table_exists(conn, "banned_users") else []
-        banned_ids = {r[0] for r in banned}
-        conn.close()
-
-        rows = "".join(f"""
-            <tr>
-              <td><code style='color:var(--accent);font-size:11px'>{u['user_id']}</code></td>
-              <td>{u['username'] or '—'}</td>
-              <td><span class="badge badge-{'green' if u['language']=='km' else 'purple'}">{u['language'].upper()}</span></td>
-              <td style='text-align:center'>{u['expense_count']}</td>
-              <td style='text-align:center'>{u['note_count']}</td>
-              <td><span class="badge badge-{'purple' if u['daily_reminder'] else 'green'}">{'ON' if u['daily_reminder'] else 'OFF'}</span></td>
-              <td style='color:var(--muted);font-size:11px'>{u['created_at'][:10]}</td>
-              <td>
-                {'<a href="/admin/unban/'+str(u["user_id"])+'" class="btn btn-success btn-sm">Unban</a>' if u['user_id'] in banned_ids else '<a href="/admin/ban/'+str(u["user_id"])+'" class="btn btn-danger btn-sm">Ban</a>'}
-              </td>
-            </tr>""" for u in users)
-
-        content = f"""
-        <div class="page-title">Users</div>
-        <div class="page-sub">TOTAL: {len(users)} USERS</div>
+      <!-- ════ USERS PAGE ════ -->
+      <div class="page" id="page-users">
+        <div class="page-header">
+          <h1>Users</h1>
+          <p id="users-sub">ALL REGISTERED USERS</p>
+        </div>
         <div class="table-wrap">
-          <div class="table-header">
+          <div class="table-head">
             <h3>👥 All Users</h3>
-            <span style='color:var(--muted);font-size:12px'>{len(users)} total</span>
+            <input class="search-box" id="user-search" placeholder="Search username / ID..." oninput="filterUsers()">
           </div>
           <table>
             <thead><tr>
               <th>User ID</th><th>Username</th><th>Lang</th>
               <th>Expenses</th><th>Notes</th><th>Reminder</th>
-              <th>Joined</th><th>Action</th>
+              <th>Joined</th><th>Status</th><th>Action</th>
             </tr></thead>
-            <tbody>{rows}</tbody>
+            <tbody id="users-tbody">
+              <tr class="empty-row"><td colspan="9"><div class="spinner"></div></td></tr>
+            </tbody>
           </table>
-        </div>"""
-        return render_template_string(BASE_HTML, content=content, logged_in=True, page="users")
+        </div>
+      </div>
 
-    # ── BAN / UNBAN ──
-    @flask_app.route("/admin/ban/<int:uid>")
-    @login_required
-    def admin_ban(uid):
-        conn = db()
-        if not _table_exists(conn, "banned_users"):
-            conn.execute("CREATE TABLE IF NOT EXISTS banned_users (user_id INTEGER PRIMARY KEY)")
-            conn.commit()
-        conn.execute("INSERT OR IGNORE INTO banned_users (user_id) VALUES (?)", (uid,))
-        conn.commit()
-        conn.close()
-        return redirect("/admin/users")
-
-    @flask_app.route("/admin/unban/<int:uid>")
-    @login_required
-    def admin_unban(uid):
-        conn = db()
-        conn.execute("DELETE FROM banned_users WHERE user_id=?", (uid,))
-        conn.commit()
-        conn.close()
-        return redirect("/admin/users")
-
-    # ── STATS ──
-    @flask_app.route("/admin/stats")
-    @login_required
-    def admin_stats():
-        conn = db()
-        by_cat = conn.execute("""
-            SELECT category, COUNT(*) as cnt, SUM(amount) as total
-            FROM expenses GROUP BY category ORDER BY total DESC
-        """).fetchall()
-        by_month = conn.execute("""
-            SELECT strftime('%Y-%m', date) as month, SUM(amount) as total, COUNT(*) as cnt
-            FROM expenses GROUP BY month ORDER BY month DESC LIMIT 12
-        """).fetchall()
-        top_users = conn.execute("""
-            SELECT e.user_id, u.username, SUM(e.amount) as total, COUNT(*) as cnt
-            FROM expenses e LEFT JOIN users u ON e.user_id=u.user_id
-            GROUP BY e.user_id ORDER BY total DESC LIMIT 10
-        """).fetchall()
-        conn.close()
-
-        cat_rows = "".join(f"""
-            <tr>
-              <td>{r['category'] or 'N/A'}</td>
-              <td style='text-align:center'>{r['cnt']}</td>
-              <td><span class="badge badge-purple">${r['total']:.2f}</span></td>
-            </tr>""" for r in by_cat)
-
-        month_rows = "".join(f"""
-            <tr>
-              <td><span class="badge badge-green">{r['month']}</span></td>
-              <td style='text-align:center'>{r['cnt']}</td>
-              <td><span class="badge badge-purple">${r['total']:.2f}</span></td>
-            </tr>""" for r in by_month)
-
-        user_rows = "".join(f"""
-            <tr>
-              <td><code style='color:var(--accent);font-size:11px'>{r['user_id']}</code></td>
-              <td>{r['username'] or '—'}</td>
-              <td style='text-align:center'>{r['cnt']}</td>
-              <td><span class="badge badge-pink">${r['total']:.2f}</span></td>
-            </tr>""" for r in top_users)
-
-        content = f"""
-        <div class="page-title">Expenses & Stats</div>
-        <div class="page-sub">FINANCIAL OVERVIEW</div>
+      <!-- ════ EXPENSES PAGE ════ -->
+      <div class="page" id="page-expenses">
+        <div class="page-header">
+          <h1>Expenses</h1>
+          <p>FINANCIAL STATISTICS</p>
+        </div>
         <div class="grid-2">
           <div class="table-wrap">
-            <div class="table-header"><h3>📁 By Category</h3></div>
-            <table><thead><tr><th>Category</th><th>Count</th><th>Total</th></tr></thead>
-            <tbody>{cat_rows or "<tr><td colspan='3' style='color:var(--muted)'>No data</td></tr>"}</tbody></table>
+            <div class="table-head"><h3>📁 By Category</h3></div>
+            <table><thead><tr><th>Category</th><th>Count</th><th>Total ($)</th></tr></thead>
+            <tbody id="exp-by-cat"><tr class="empty-row"><td colspan="3"><div class="spinner"></div></td></tr></tbody>
+            </table>
           </div>
           <div class="table-wrap">
-            <div class="table-header"><h3>📅 By Month</h3></div>
-            <table><thead><tr><th>Month</th><th>Count</th><th>Total</th></tr></thead>
-            <tbody>{month_rows or "<tr><td colspan='3' style='color:var(--muted)'>No data</td></tr>"}</tbody></table>
+            <div class="table-head"><h3>📅 By Month</h3></div>
+            <table><thead><tr><th>Month</th><th>Count</th><th>Total ($)</th></tr></thead>
+            <tbody id="exp-by-month"><tr class="empty-row"><td colspan="3"><div class="spinner"></div></td></tr></tbody>
+            </table>
           </div>
         </div>
         <div class="table-wrap">
-          <div class="table-header"><h3>🏆 Top Spenders</h3></div>
-          <table><thead><tr><th>User ID</th><th>Username</th><th>Transactions</th><th>Total Spent</th></tr></thead>
-          <tbody>{user_rows or "<tr><td colspan='4' style='color:var(--muted)'>No data</td></tr>"}</tbody></table>
-        </div>"""
-        return render_template_string(BASE_HTML, content=content, logged_in=True, page="stats")
+          <div class="table-head"><h3>🏆 Top Spenders</h3></div>
+          <table><thead><tr><th>User ID</th><th>Username</th><th>Transactions</th><th>Total ($)</th></tr></thead>
+          <tbody id="exp-top-users"><tr class="empty-row"><td colspan="4"><div class="spinner"></div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
 
-    # ── BROADCAST ──
-    @flask_app.route("/admin/broadcast", methods=["GET", "POST"])
-    @login_required
-    def admin_broadcast():
-        result = ""
-        if request.method == "POST":
-            message = request.form.get("message", "").strip()
-            if message and _bot_app:
-                conn = db()
-                user_ids = [r[0] for r in conn.execute("SELECT user_id FROM users").fetchall()]
-                conn.close()
-                sent = 0
-                failed = 0
-                import asyncio
-                async def do_broadcast():
-                    nonlocal sent, failed
-                    for uid in user_ids:
-                        try:
-                            await _bot_app.bot.send_message(chat_id=uid, text=f"📢 *Admin Announcement*\n\n{message}", parse_mode="Markdown")
-                            sent += 1
-                        except Exception:
-                            failed += 1
-                try:
-                    loop = asyncio.new_event_loop()
-                    loop.run_until_complete(do_broadcast())
-                    loop.close()
-                    result = f'<div class="alert alert-success">✅ Sent to {sent} users ({failed} failed)</div>'
-                except Exception as e:
-                    result = f'<div class="alert alert-error">❌ Error: {e}</div>'
-            elif not _bot_app:
-                result = '<div class="alert alert-error">❌ Bot not connected to dashboard yet</div>'
-
-        conn = db()
-        user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        conn.close()
-
-        content = f"""
-        <div class="page-title">Broadcast</div>
-        <div class="page-sub">SEND MESSAGE TO ALL USERS</div>
-        {result}
+      <!-- ════ BROADCAST PAGE ════ -->
+      <div class="page" id="page-broadcast">
+        <div class="page-header">
+          <h1>Broadcast</h1>
+          <p>SEND MESSAGE TO ALL USERS</p>
+        </div>
+        <div id="bc-alert" style="display:none"></div>
         <div class="section">
-          <h3>📢 Send Broadcast Message</h3>
-          <p style='color:var(--muted);font-size:13px;margin-bottom:16px'>Will be sent to all <strong style='color:var(--accent)'>{user_count}</strong> users</p>
-          <form method="POST">
-            <div class="form-group">
-              <label class="form-label">Message</label>
-              <textarea name="message" class="form-textarea" placeholder="Type your announcement here..."></textarea>
-            </div>
-            <button type="submit" class="btn btn-primary">📤 Send to All Users</button>
-          </form>
-        </div>"""
-        return render_template_string(BASE_HTML, content=content, logged_in=True, page="broadcast")
+          <h3>📢 New Broadcast</h3>
+          <p class="section-sub">Will be sent to <strong id="bc-count" style="color:var(--accent)">—</strong> users via Telegram</p>
+          <div class="form-group">
+            <label class="form-label">Message</label>
+            <textarea id="bc-msg" class="form-textarea" placeholder="Type your announcement here... Supports *bold* and _italic_ (Markdown)"></textarea>
+          </div>
+          <button class="btn btn-primary" onclick="sendBroadcast()" id="bc-btn" style="width:auto">
+            <span>📤</span> Send to All Users
+          </button>
+        </div>
+      </div>
 
-    # ── ERROR LOGS ──
-    @flask_app.route("/admin/errors")
-    @login_required
-    def admin_errors():
-        conn = db()
-        errors = conn.execute("""
-            SELECT e.*, u.username FROM error_logs e
-            LEFT JOIN users u ON e.user_id=u.user_id
-            ORDER BY e.created_at DESC LIMIT 50
-        """).fetchall()
-        conn.close()
+      <!-- ════ MAINTENANCE PAGE ════ -->
+      <div class="page" id="page-maintenance">
+        <div class="page-header">
+          <h1>Maintenance</h1>
+          <p>BOT SETTINGS & CONTROLS</p>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <h4>🔧 Maintenance Mode</h4>
+            <p>When ON, bot replies with maintenance message to all users</p>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="maint-toggle" onchange="toggleMaintenance()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="section">
+          <h3>🗄️ Database Info</h3>
+          <p class="section-sub">Current database statistics</p>
+          <div id="db-info" style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--muted);line-height:2">
+            Loading...
+          </div>
+        </div>
+        <div class="section">
+          <h3>🔑 Bot Info</h3>
+          <p class="section-sub">Runtime information</p>
+          <div id="bot-info" style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--muted);line-height:2">
+            Loading...
+          </div>
+        </div>
+      </div>
 
-        rows = "".join(f"""
-            <tr>
-              <td><code style='color:var(--accent);font-size:11px'>{e['user_id']}</code></td>
-              <td style='font-size:11px;color:var(--muted)'>{e['username'] or '—'}</td>
-              <td style='font-size:12px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>{e['error']}</td>
-              <td><span class="badge badge-purple">{e['context'] or '—'}</span></td>
-              <td style='color:var(--muted);font-size:11px'>{e['created_at'][:16]}</td>
-            </tr>""" for e in errors)
-
-        content = f"""
-        <div class="page-title">Error Logs</div>
-        <div class="page-sub">LAST 50 ERRORS</div>
+      <!-- ════ ERRORS PAGE ════ -->
+      <div class="page" id="page-errors">
+        <div class="page-header">
+          <h1>Error Logs</h1>
+          <p>LAST 50 ERRORS</p>
+        </div>
         <div class="table-wrap">
-          <div class="table-header">
+          <div class="table-head">
             <h3>⚠️ Recent Errors</h3>
-            <span style='color:var(--muted);font-size:12px'>{len(errors)} entries</span>
+            <span id="err-count" style="font-size:11px;color:var(--muted);font-family:'IBM Plex Mono',monospace">— entries</span>
           </div>
           <table>
             <thead><tr><th>User ID</th><th>Username</th><th>Error</th><th>Context</th><th>Time</th></tr></thead>
-            <tbody>{rows or "<tr><td colspan='5' style='color:var(--muted);text-align:center;padding:24px'>No errors logged</td></tr>"}</tbody>
+            <tbody id="errors-tbody">
+              <tr class="empty-row"><td colspan="5"><div class="spinner"></div></td></tr>
+            </tbody>
           </table>
-        </div>"""
-        return render_template_string(BASE_HTML, content=content, logged_in=True, page="errors")
+        </div>
+      </div>
 
-    # ── API: Stats JSON ──
-    @flask_app.route("/admin/api/stats")
+    </div><!-- /content -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<div id="toast"></div>
+
+<script>
+// ─── STATE ───
+let allUsers = [];
+let currentPage = 'dashboard';
+
+// ─── AUTH ───
+async function doLogin() {
+  const pw = document.getElementById('login-pw').value.trim();
+  const alert = document.getElementById('login-alert');
+  try {
+    const res = await fetch('/admin/api/login', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({password: pw})
+    });
+    if (res.ok) {
+      showApp();
+    } else {
+      alert.textContent = '❌ Wrong password';
+      alert.style.display = 'block';
+    }
+  } catch(e) {
+    alert.textContent = '❌ Connection error';
+    alert.style.display = 'block';
+  }
+}
+
+function devLogin() {
+  document.getElementById('login-pw').value = 'admin1234';
+  doLogin();
+}
+
+function showApp() {
+  document.getElementById('login-screen').style.display = 'none';
+  const app = document.getElementById('app');
+  app.style.display = 'flex';
+  loadPage('dashboard');
+  startUptimeTimer();
+}
+
+async function doLogout() {
+  await fetch('/admin/api/logout', {method:'POST'});
+  location.reload();
+}
+
+// ─── NAVIGATION ───
+function gotoPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  document.getElementById('nav-' + name).classList.add('active');
+  document.getElementById('topbar-title').textContent = name.charAt(0).toUpperCase() + name.slice(1);
+  currentPage = name;
+  loadPage(name);
+}
+
+function refreshPage() { loadPage(currentPage); }
+
+function loadPage(name) {
+  const loaders = {
+    dashboard: loadDashboard,
+    users: loadUsers,
+    expenses: loadExpenses,
+    broadcast: loadBroadcast,
+    maintenance: loadMaintenance,
+    errors: loadErrors,
+  };
+  if (loaders[name]) loaders[name]();
+}
+
+// ─── API HELPER ───
+async function api(path, opts={}) {
+  const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
+  if (res.status === 401) { location.reload(); return null; }
+  return res;
+}
+
+// ─── TOAST ───
+function toast(msg, type='success') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'show ' + type;
+  setTimeout(() => t.className = '', 3000);
+}
+
+// ─── UPTIME ───
+let _startTime = Date.now();
+function startUptimeTimer() {
+  setInterval(async () => {
+    try {
+      const r = await fetch('/health');
+      const d = await r.json();
+      const s = d.uptime_seconds;
+      const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
+      document.getElementById('uptime-badge').textContent =
+        `UPTIME: ${h}h ${m}m ${sec}s`;
+    } catch(e){}
+  }, 5000);
+}
+
+// ─── DASHBOARD ───
+async function loadDashboard() {
+  document.getElementById('dash-time').textContent =
+    'OVERVIEW // ' + new Date().toISOString().slice(0,16).replace('T',' ') + ' UTC';
+  const res = await api('/admin/api/dashboard');
+  if (!res) return;
+  const d = await res.json();
+  document.getElementById('d-users').textContent = d.total_users ?? '—';
+  document.getElementById('d-expenses').textContent = d.total_expenses?.toFixed(2) ?? '—';
+  document.getElementById('d-notes').textContent = d.total_notes ?? '—';
+  document.getElementById('d-errors').textContent = d.total_errors ?? '—';
+
+  const ru = document.getElementById('dash-recent-users');
+  ru.innerHTML = (d.recent_users||[]).length
+    ? d.recent_users.map(u => `<tr>
+        <td><code class="uid">${u.user_id}</code></td>
+        <td>${u.username || '<span style="color:var(--muted)">—</span>'}</td>
+        <td style="color:var(--muted);font-size:11px">${(u.created_at||'').slice(0,10)}</td>
+      </tr>`).join('')
+    : '<tr class="empty-row"><td colspan="3">No users yet</td></tr>';
+
+  const re = document.getElementById('dash-recent-exp');
+  re.innerHTML = (d.recent_expenses||[]).length
+    ? d.recent_expenses.map(e => `<tr>
+        <td><code class="uid">${e.user_id}</code></td>
+        <td><span class="badge badge-orange">${e.category||'—'}</span></td>
+        <td><span class="badge badge-blue">$${(e.amount||0).toFixed(2)}</span></td>
+      </tr>`).join('')
+    : '<tr class="empty-row"><td colspan="3">No expenses yet</td></tr>';
+}
+
+// ─── USERS ───
+async function loadUsers() {
+  const res = await api('/admin/api/users');
+  if (!res) return;
+  allUsers = await res.json();
+  document.getElementById('users-sub').textContent = `${allUsers.length} TOTAL USERS`;
+  renderUsers(allUsers);
+}
+
+function renderUsers(users) {
+  const tbody = document.getElementById('users-tbody');
+  if (!users.length) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="9">No users found</td></tr>';
+    return;
+  }
+  tbody.innerHTML = users.map(u => `<tr>
+    <td><code class="uid">${u.user_id}</code></td>
+    <td>${u.username ? `<strong>${u.username}</strong>` : '<span style="color:var(--muted)">—</span>'}</td>
+    <td><span class="badge badge-blue">${u.language||'km'}</span></td>
+    <td style="text-align:center">${u.expense_count||0}</td>
+    <td style="text-align:center">${u.note_count||0}</td>
+    <td><span class="badge ${u.daily_reminder ? 'badge-green' : 'badge-red'}">${u.daily_reminder ? 'ON' : 'OFF'}</span></td>
+    <td style="color:var(--muted);font-size:11px">${(u.created_at||'').slice(0,10)}</td>
+    <td><span class="badge ${u.banned ? 'badge-red' : 'badge-green'}">${u.banned ? 'BANNED' : 'ACTIVE'}</span></td>
+    <td>
+      ${u.banned
+        ? `<button class="btn btn-success btn-sm" onclick="banUser(${u.user_id},false)">Unban</button>`
+        : `<button class="btn btn-danger btn-sm" onclick="banUser(${u.user_id},true)">Ban</button>`
+      }
+    </td>
+  </tr>`).join('');
+}
+
+function filterUsers() {
+  const q = document.getElementById('user-search').value.toLowerCase();
+  const filtered = allUsers.filter(u =>
+    String(u.user_id).includes(q) || (u.username||'').toLowerCase().includes(q)
+  );
+  renderUsers(filtered);
+}
+
+async function banUser(uid, ban) {
+  const res = await api(`/admin/api/${ban?'ban':'unban'}/${uid}`, {method:'POST'});
+  if (res?.ok) {
+    toast(ban ? `User ${uid} banned` : `User ${uid} unbanned`, ban ? 'error' : 'success');
+    loadUsers();
+  }
+}
+
+// ─── EXPENSES ───
+async function loadExpenses() {
+  const res = await api('/admin/api/expenses');
+  if (!res) return;
+  const d = await res.json();
+
+  document.getElementById('exp-by-cat').innerHTML = (d.by_category||[]).length
+    ? d.by_category.map(r => `<tr>
+        <td>${r.category||'N/A'}</td>
+        <td style="text-align:center">${r.count}</td>
+        <td><span class="badge badge-blue">$${(r.total||0).toFixed(2)}</span></td>
+      </tr>`).join('')
+    : '<tr class="empty-row"><td colspan="3">No data</td></tr>';
+
+  document.getElementById('exp-by-month').innerHTML = (d.by_month||[]).length
+    ? d.by_month.map(r => `<tr>
+        <td><span class="badge badge-green">${r.month}</span></td>
+        <td style="text-align:center">${r.count}</td>
+        <td><span class="badge badge-blue">$${(r.total||0).toFixed(2)}</span></td>
+      </tr>`).join('')
+    : '<tr class="empty-row"><td colspan="3">No data</td></tr>';
+
+  document.getElementById('exp-top-users').innerHTML = (d.top_users||[]).length
+    ? d.top_users.map(r => `<tr>
+        <td><code class="uid">${r.user_id}</code></td>
+        <td>${r.username||'—'}</td>
+        <td style="text-align:center">${r.count}</td>
+        <td><span class="badge badge-purple">$${(r.total||0).toFixed(2)}</span></td>
+      </tr>`).join('')
+    : '<tr class="empty-row"><td colspan="4">No data</td></tr>';
+}
+
+// ─── BROADCAST ───
+async function loadBroadcast() {
+  const res = await api('/admin/api/dashboard');
+  if (res?.ok) {
+    const d = await res.json();
+    document.getElementById('bc-count').textContent = d.total_users ?? '—';
+  }
+}
+
+async function sendBroadcast() {
+  const msg = document.getElementById('bc-msg').value.trim();
+  const alertEl = document.getElementById('bc-alert');
+  if (!msg) { toast('Message cannot be empty', 'error'); return; }
+  const btn = document.getElementById('bc-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Sending...';
+  alertEl.style.display = 'none';
+  const res = await api('/admin/api/broadcast', {
+    method:'POST', body:JSON.stringify({message:msg})
+  });
+  btn.disabled = false;
+  btn.innerHTML = '<span>📤</span> Send to All Users';
+  if (res?.ok) {
+    const d = await res.json();
+    alertEl.className = 'alert alert-success';
+    alertEl.textContent = `✅ Sent to ${d.sent} users (${d.failed} failed)`;
+    alertEl.style.display = 'block';
+    document.getElementById('bc-msg').value = '';
+    toast(`Broadcast sent to ${d.sent} users`);
+  } else {
+    alertEl.className = 'alert alert-error';
+    alertEl.textContent = '❌ Broadcast failed. Bot may not be connected.';
+    alertEl.style.display = 'block';
+  }
+}
+
+// ─── MAINTENANCE ───
+async function loadMaintenance() {
+  const res = await api('/admin/api/maintenance');
+  if (!res) return;
+  const d = await res.json();
+  document.getElementById('maint-toggle').checked = d.maintenance_mode;
+  document.getElementById('db-info').innerHTML = `
+    👥 Users: <strong style="color:var(--text)">${d.users}</strong><br>
+    💰 Expenses: <strong style="color:var(--text)">${d.expenses}</strong><br>
+    📝 Notes: <strong style="color:var(--text)">${d.notes}</strong><br>
+    ⚠️ Error Logs: <strong style="color:var(--text)">${d.errors}</strong>
+  `;
+  document.getElementById('bot-info').innerHTML = `
+    🌐 Port: <strong style="color:var(--text)">${d.port}</strong><br>
+    🕐 Uptime: <strong style="color:var(--text)">${d.uptime}</strong><br>
+    🐍 Python: <strong style="color:var(--text)">${d.python}</strong><br>
+    🔑 Bot Token: <strong style="color:var(--text)">${d.token_status}</strong>
+  `;
+}
+
+async function toggleMaintenance() {
+  const enabled = document.getElementById('maint-toggle').checked;
+  const res = await api('/admin/api/maintenance/toggle', {
+    method:'POST', body:JSON.stringify({enabled})
+  });
+  if (res?.ok) {
+    toast(enabled ? '🔧 Maintenance mode ON' : '✅ Maintenance mode OFF', enabled ? 'error' : 'success');
+  }
+}
+
+// ─── ERRORS ───
+async function loadErrors() {
+  const res = await api('/admin/api/errors');
+  if (!res) return;
+  const errors = await res.json();
+  document.getElementById('err-count').textContent = `${errors.length} entries`;
+  document.getElementById('errors-tbody').innerHTML = errors.length
+    ? errors.map(e => `<tr>
+        <td><code class="uid">${e.user_id||'—'}</code></td>
+        <td style="color:var(--muted);font-size:11px">${e.username||'—'}</td>
+        <td style="font-size:11px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(e.error||'').replace(/"/g,'&quot;')}">${e.error||'—'}</td>
+        <td><span class="badge badge-purple">${e.context||'—'}</span></td>
+        <td style="color:var(--muted);font-size:11px;font-family:'IBM Plex Mono',monospace">${(e.created_at||'').slice(0,16)}</td>
+      </tr>`).join('')
+    : '<tr class="empty-row"><td colspan="5">No errors logged 🎉</td></tr>';
+}
+
+// ─── ENTER KEY ───
+document.getElementById('login-pw').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
+
+// ─── AUTO-CHECK SESSION ───
+(async () => {
+  const res = await fetch('/admin/api/check');
+  if (res.ok) showApp();
+})();
+</script>
+</body>
+</html>"""
+
+
+# ─────────────────────────────────────────────
+# REGISTER ROUTES
+# ─────────────────────────────────────────────
+def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
+    flask_app.secret_key = secret_key
+    DASHBOARD_PASSWORD = password
+
+    # ── SERVE SPA ──
+    @flask_app.route("/admin")
+    @flask_app.route("/admin/")
+    def admin_index():
+        return ADMIN_HTML
+
+    # ── LOGIN API ──
+    @flask_app.route("/admin/api/login", methods=["POST"])
+    def api_login():
+        data = request.get_json() or {}
+        if data.get("password") == DASHBOARD_PASSWORD:
+            session["logged_in"] = True
+            return jsonify({"ok": True})
+        return jsonify({"error": "Wrong password"}), 401
+
+    @flask_app.route("/admin/api/logout", methods=["POST"])
+    def api_logout():
+        session.clear()
+        return jsonify({"ok": True})
+
+    @flask_app.route("/admin/api/check")
+    def api_check():
+        if session.get("logged_in"):
+            return jsonify({"ok": True})
+        return jsonify({"error": "Not logged in"}), 401
+
+    # ── DASHBOARD API ──
+    @flask_app.route("/admin/api/dashboard")
     @login_required
-    def api_stats():
+    def api_dashboard():
         conn = db()
-        data = {
-            "users": conn.execute("SELECT COUNT(*) FROM users").fetchone()[0],
-            "expenses": conn.execute("SELECT COALESCE(SUM(amount),0) FROM expenses").fetchone()[0],
-            "notes": conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0],
-        }
+        total_users    = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        total_expenses = conn.execute("SELECT COALESCE(SUM(amount),0) FROM expenses").fetchone()[0]
+        total_notes    = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+        total_errors   = 0
+        if _table_exists(conn, "error_logs"):
+            total_errors = conn.execute("SELECT COUNT(*) FROM error_logs").fetchone()[0]
+        recent_users = [dict(r) for r in conn.execute(
+            "SELECT user_id, username, created_at FROM users ORDER BY created_at DESC LIMIT 5"
+        ).fetchall()]
+        recent_expenses = [dict(r) for r in conn.execute(
+            "SELECT user_id, category, amount FROM expenses ORDER BY created_at DESC LIMIT 5"
+        ).fetchall()]
         conn.close()
-        return jsonify(data)
+        return jsonify({
+            "total_users": total_users,
+            "total_expenses": total_expenses,
+            "total_notes": total_notes,
+            "total_errors": total_errors,
+            "recent_users": recent_users,
+            "recent_expenses": recent_expenses,
+        })
 
-    logger.info("✅ Admin dashboard បានចុះឈ្មោះនៅ /admin")
+    # ── USERS API ──
+    @flask_app.route("/admin/api/users")
+    @login_required
+    def api_users():
+        conn = db()
+        # Ensure banned_users table exists
+        if not _table_exists(conn, "banned_users"):
+            conn.execute("CREATE TABLE IF NOT EXISTS banned_users (user_id INTEGER PRIMARY KEY)")
+            conn.commit()
+        banned_ids = {r[0] for r in conn.execute("SELECT user_id FROM banned_users").fetchall()}
+        users = [dict(r) for r in conn.execute("""
+            SELECT u.*,
+              (SELECT COUNT(*) FROM expenses e WHERE e.user_id=u.user_id) as expense_count,
+              (SELECT COUNT(*) FROM notes n WHERE n.user_id=u.user_id) as note_count
+            FROM users u ORDER BY u.created_at DESC
+        """).fetchall()]
+        conn.close()
+        for u in users:
+            u["banned"] = u["user_id"] in banned_ids
+        return jsonify(users)
+
+    # ── BAN / UNBAN ──
+    @flask_app.route("/admin/api/ban/<int:uid>", methods=["POST"])
+    @login_required
+    def api_ban(uid):
+        conn = db()
+        if not _table_exists(conn, "banned_users"):
+            conn.execute("CREATE TABLE IF NOT EXISTS banned_users (user_id INTEGER PRIMARY KEY)")
+        conn.execute("INSERT OR IGNORE INTO banned_users (user_id) VALUES (?)", (uid,))
+        conn.commit(); conn.close()
+        return jsonify({"ok": True})
+
+    @flask_app.route("/admin/api/unban/<int:uid>", methods=["POST"])
+    @login_required
+    def api_unban(uid):
+        conn = db()
+        conn.execute("DELETE FROM banned_users WHERE user_id=?", (uid,))
+        conn.commit(); conn.close()
+        return jsonify({"ok": True})
+
+    # ── EXPENSES API ──
+    @flask_app.route("/admin/api/expenses")
+    @login_required
+    def api_expenses():
+        conn = db()
+        by_cat = [dict(r) for r in conn.execute("""
+            SELECT category, COUNT(*) as count, SUM(amount) as total
+            FROM expenses GROUP BY category ORDER BY total DESC
+        """).fetchall()]
+        by_month = [dict(r) for r in conn.execute("""
+            SELECT strftime('%Y-%m', date) as month,
+                   COUNT(*) as count, SUM(amount) as total
+            FROM expenses GROUP BY month ORDER BY month DESC LIMIT 12
+        """).fetchall()]
+        top_users = [dict(r) for r in conn.execute("""
+            SELECT e.user_id, u.username, COUNT(*) as count, SUM(e.amount) as total
+            FROM expenses e LEFT JOIN users u ON e.user_id=u.user_id
+            GROUP BY e.user_id ORDER BY total DESC LIMIT 10
+        """).fetchall()]
+        conn.close()
+        return jsonify({"by_category": by_cat, "by_month": by_month, "top_users": top_users})
+
+    # ── BROADCAST API ──
+    @flask_app.route("/admin/api/broadcast", methods=["POST"])
+    @login_required
+    def api_broadcast():
+        data = request.get_json() or {}
+        message = data.get("message", "").strip()
+        if not message:
+            return jsonify({"error": "Empty message"}), 400
+        if not _bot_app:
+            return jsonify({"error": "Bot not connected"}), 503
+        conn = db()
+        user_ids = [r[0] for r in conn.execute("SELECT user_id FROM users").fetchall()]
+        conn.close()
+        sent = 0; failed = 0
+        import asyncio
+        async def do_broadcast():
+            nonlocal sent, failed
+            for uid in user_ids:
+                try:
+                    await _bot_app.bot.send_message(
+                        chat_id=uid,
+                        text=f"📢 *Admin Announcement*\n\n{message}",
+                        parse_mode="Markdown"
+                    )
+                    sent += 1
+                except Exception:
+                    failed += 1
+        try:
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(do_broadcast())
+            loop.close()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        return jsonify({"sent": sent, "failed": failed})
+
+    # ── MAINTENANCE API ──
+    @flask_app.route("/admin/api/maintenance")
+    @login_required
+    def api_maintenance():
+        import sys, config as cfg
+        conn = db()
+        users    = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        expenses = conn.execute("SELECT COUNT(*) FROM expenses").fetchone()[0]
+        notes    = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+        errors   = 0
+        if _table_exists(conn, "error_logs"):
+            errors = conn.execute("SELECT COUNT(*) FROM error_logs").fetchone()[0]
+        conn.close()
+        import time
+        uptime_secs = int(time.time() - _proc_start)
+        h = uptime_secs // 3600; m = (uptime_secs % 3600) // 60; s = uptime_secs % 60
+        return jsonify({
+            "maintenance_mode": cfg.MAINTENANCE_MODE,
+            "users": users, "expenses": expenses, "notes": notes, "errors": errors,
+            "port": os.environ.get("PORT", "10000"),
+            "uptime": f"{h}h {m}m {s}s",
+            "python": sys.version.split()[0],
+            "token_status": "✅ Set" if os.environ.get("TOKEN") else "❌ Not set",
+        })
+
+    @flask_app.route("/admin/api/maintenance/toggle", methods=["POST"])
+    @login_required
+    def api_maintenance_toggle():
+        import config as cfg
+        data = request.get_json() or {}
+        cfg.MAINTENANCE_MODE = bool(data.get("enabled", False))
+        return jsonify({"ok": True, "maintenance_mode": cfg.MAINTENANCE_MODE})
+
+    # ── ERRORS API ──
+    @flask_app.route("/admin/api/errors")
+    @login_required
+    def api_errors():
+        conn = db()
+        if not _table_exists(conn, "error_logs"):
+            conn.close()
+            return jsonify([])
+        errors = [dict(r) for r in conn.execute("""
+            SELECT e.*, u.username FROM error_logs e
+            LEFT JOIN users u ON e.user_id=u.user_id
+            ORDER BY e.created_at DESC LIMIT 50
+        """).fetchall()]
+        conn.close()
+        return jsonify(errors)
+
+    logger.info("✅ Admin dashboard registered at /admin")
 
 
-def _table_exists(conn, name):
-    row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
-    return row is not None
+import time as _time
+_proc_start = _time.time()

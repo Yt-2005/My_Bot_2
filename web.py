@@ -1,7 +1,7 @@
 """
 web.py — Flask health server + Admin Dashboard
-Health: /health /ping
-Admin:  /admin (password protected)
+Health: /health  /ping
+Admin:  /admin   (password protected)
 """
 
 import threading
@@ -40,12 +40,10 @@ def start_health_server(port: int = 10000, bot_app=None):
     """Start Flask + Admin Dashboard in a background daemon thread."""
     import os
 
-    # Register admin dashboard
     from dashboard import register_dashboard, set_bot_app
     if bot_app:
         set_bot_app(bot_app)
 
-    # Get password from env or use default
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin1234")
     secret_key     = os.environ.get("SECRET_KEY", "bot-secret-key-2024")
 
