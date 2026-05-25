@@ -7,7 +7,7 @@ services:
     name: telegram-bot
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python src/bot.py
+    startCommand: cd src && python bot.py
     envVars:
       - key: TOKEN
         sync: false           # Set manually in Render dashboard
