@@ -314,10 +314,10 @@ tr:hover td { background: var(--surface2); }
   </div>
 </div>
 <div class="main">
-  {{ content }}
+  {{ content | safe }}
 </div>
 {% else %}
-  {{ content }}
+  {{ content | safe }}
 {% endif %}
 </body>
 </html>"""
@@ -679,7 +679,7 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
         conn.close()
         return jsonify(data)
 
-    logger.info("✅ Admin dashboard registered at /admin")
+    logger.info("✅ Admin dashboard បានចុះឈ្មោះនៅ /admin")
 
 
 def _table_exists(conn, name):
