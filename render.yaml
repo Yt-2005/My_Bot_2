@@ -1,43 +1,19 @@
-# # render.yaml — Render.com deployment configuration
-# # Deploy this as a "Background Worker" service (NOT a Web Service)
-# # Background workers don't sleep on free tier!
+# render.yaml — Render.com deployment config
+# Deploy as "Background Worker" (stays alive 24/7 on free tier!)
 
-# services:
-#   - type: worker              # Background Worker — stays alive 24/7
-#     name: telegram-bot
-#     runtime: python
-#     buildCommand: pip install -r requirements.txt
-#     startCommand: cd src && python bot.py 
-#       - key: TOKEN
-#         sync: false           # Set manually in Render dashboard
-#       - key: GEMINI_KEY_1
-#         sync: false
-#       - key: GEMINI_KEY_2
-#         sync: false
-#       - key: GEMINI_KEY_3
-#         sync: false
-#       - key: ADMIN_IDS
-#         sync: false
-#       - key: PORT
-#         value: 10000
-#     plan: free
 services:
   - type: worker
     name: telegram-bot
     runtime: python
-    buildCommand: pip install -r src/requirements.txt
-    startCommand: cd src && python bot.py
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
     envVars:
       - key: TOKEN
-        sync: false
-      - key: GEMINI_KEY_1
-        sync: false
-      - key: GEMINI_KEY_2
-        sync: false
-      - key: GEMINI_KEY_3
-        sync: false
+        sync: false           # Set manually in Render dashboard
+      - key: GROQ_API_KEY
+        sync: false           # Get free key at console.groq.com
       - key: ADMIN_IDS
         sync: false
       - key: PORT
         value: 10000
-plan: free
+    plan: free

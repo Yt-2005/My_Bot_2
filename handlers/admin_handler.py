@@ -4,7 +4,7 @@ handlers/admin_handler.py — Admin-only commands
 /stats       — Bot usage statistics
 /errorlogs   — Recent error logs
 /maintenance — Toggle maintenance mode
-/restart     — Restart reminder (Render redeploys via CI)
+/restart     — Restart reminder
 """
 
 import logging
@@ -14,12 +14,11 @@ from telegram.ext import ContextTypes, ConversationHandler
 from telegram.constants import ParseMode
 
 from database import count_users, get_all_user_ids, get_recent_errors, log_error
-from config import ADMIN_IDS
-import config as cfg  # for toggling MAINTENANCE_MODE
+from config import ADMIN_IDS, GROQ_API_KEY
+import config as cfg
 
 logger = logging.getLogger(__name__)
 
-# Conversation state
 BROADCAST_MSG = 1
 
 
@@ -28,34 +27,29 @@ def is_admin(user_id: int) -> bool:
 
 
 async def admin_only(update: Update) -> bool:
-    """Check admin and reply if not. Returns True if admin."""
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ *Admin only command.*", parse_mode=ParseMode.MARKDOWN)
         return False
     return True
 
 
-# ─────────────────────────────────────────────
-# /stats
-# ─────────────────────────────────────────────
-
 async def stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
 
     total_users = count_users()
+    ai_status = "✅ Configured" if GROQ_API_KEY else "❌ Not configured"
+    key_preview = f"`{GROQ_API_KEY[:8]}...`" if GROQ_API_KEY else "None"
+
     await update.message.reply_text(
         f"📊 *Bot Statistics*\n\n"
         f"👥 Total users: *{total_users}*\n"
-        f"🔑 Gemini keys: *{len(cfg.GEMINI_KEYS)}*\n"
-        f"🔧 Maintenance: *{'ON' if cfg.MAINTENANCE_MODE else 'OFF'}*",
+        f"🤖 Groq AI: *{ai_status}*\n"
+        f"🔑 Key: {key_preview}\n"
+        f"🔧 Maintenance: *{'ON 🔴' if cfg.MAINTENANCE_MODE else 'OFF 🟢'}*",
         parse_mode=ParseMode.MARKDOWN
     )
 
-
-# ─────────────────────────────────────────────
-# /errorlogs
-# ─────────────────────────────────────────────
 
 async def error_logs_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
@@ -70,36 +64,25 @@ async def error_logs_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for e in errors:
         lines.append(
             f"• `{e['created_at'][:16]}` — user `{e['user_id']}`\n"
-            f"  {e['error'][:100]}"
+            f"  _{e['error'][:100]}_"
         )
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
-# ─────────────────────────────────────────────
-# /maintenance
-# ─────────────────────────────────────────────
-
 async def maintenance_toggle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
-
     cfg.MAINTENANCE_MODE = not cfg.MAINTENANCE_MODE
-    state = "🔧 ON" if cfg.MAINTENANCE_MODE else "✅ OFF"
+    state = "🔴 ON" if cfg.MAINTENANCE_MODE else "🟢 OFF"
     await update.message.reply_text(
-        f"🔧 *Maintenance mode: {state}*\n\n"
-        "Users will see a maintenance message until you turn it off.",
+        f"🔧 *Maintenance mode: {state}*",
         parse_mode=ParseMode.MARKDOWN
     )
 
 
-# ─────────────────────────────────────────────
-# /broadcast
-# ─────────────────────────────────────────────
-
 async def broadcast_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return ConversationHandler.END
-
     await update.message.reply_text(
         "📢 *Broadcast Message*\n\n"
         "Type the message to send to all users.\n"
@@ -137,8 +120,6 @@ async def broadcast_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             failed += 1
             logger.warning(f"Broadcast failed for {target_uid}: {e}")
-
-        # Small delay to avoid rate limiting
         if sent % 25 == 0:
             await asyncio.sleep(1)
 
@@ -152,18 +133,14 @@ async def broadcast_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# ─────────────────────────────────────────────
-# /restart (informational — Render redeploys via dashboard)
-# ─────────────────────────────────────────────
-
 async def restart_info(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
     await update.message.reply_text(
         "🔄 *Restart Info*\n\n"
-        "To restart the bot on Render:\n"
-        "1. Go to your Render dashboard\n"
+        "To restart on Render:\n"
+        "1. Go to Render dashboard\n"
         "2. Click 'Manual Deploy' → 'Deploy latest commit'\n\n"
-        "The bot will restart automatically on redeploy.",
+        "Bot restarts automatically on redeploy.",
         parse_mode=ParseMode.MARKDOWN
     )

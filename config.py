@@ -16,15 +16,13 @@ ADMIN_IDS_RAW = os.environ.get("ADMIN_IDS", "")
 ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()]
 
 # ─────────────────────────────────────────────
-# GEMINI AI KEYS (key rotation support)
+# GROQ AI (replaces Gemini — free & fast)
+# Get your free key at: https://console.groq.com
 # ─────────────────────────────────────────────
-GEMINI_KEYS = [
-    k for k in [
-        os.environ.get("GEMINI_KEY_1", ""),
-        os.environ.get("GEMINI_KEY_2", ""),
-        os.environ.get("GEMINI_KEY_3", ""),
-    ] if k
-]
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+
+# Keep GEMINI_KEYS as empty list for backward compat
+GEMINI_KEYS = []
 
 # ─────────────────────────────────────────────
 # IMAGE GENERATION
@@ -48,7 +46,7 @@ PORT = int(os.environ.get("PORT", 10000))
 # ─────────────────────────────────────────────
 # RATE LIMITING
 # ─────────────────────────────────────────────
-RATE_LIMIT_SECONDS = 3       # Min seconds between messages per user
+RATE_LIMIT_SECONDS = 2       # Min seconds between messages per user
 MAX_NOTES_PER_USER = 50      # Max notes a user can store
 AI_CHAT_MEMORY = 10          # Number of messages to remember per user
 

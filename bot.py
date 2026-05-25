@@ -1,6 +1,5 @@
 """
 bot.py — Main entry point for the Telegram Bot
-Registers all handlers, starts polling loop with auto-reconnect.
 """
 
 import sys
@@ -8,7 +7,6 @@ import time
 import logging
 import asyncio
 
-# ── Python 3.13 compatibility patch ──────────────────────────────────────
 if sys.version_info >= (3, 13):
     try:
         import telegram.ext._updater as _upd
@@ -25,23 +23,18 @@ from telegram.ext import (
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import TOKEN, PORT, GEMINI_KEYS, ADMIN_IDS
+from config import TOKEN, GROQ_API_KEY, ADMIN_IDS
 from database import init_db
 from web import start_health_server
+import config as cfg
 
-# ── Handler imports ──────────────────────────────────────────────────────
-from handlers.core import (
-    start, help_cmd, cancel, clear_chat, menu_callback,
-)
+from handlers.core import start, help_cmd, cancel, clear_chat, menu_callback
 from handlers.image_handler import (
     imagine_cmd, image_style_callback, reimagine_callback,
     upscale_cmd, upscale_photo_received, upscale_pending_callback,
     WAITING_FOR_UPSCALE_PHOTO,
 )
-from handlers.chat_handler import (
-    chat_cmd, chat_message, handle_text_message,
-    CHATTING,
-)
+from handlers.chat_handler import chat_cmd, chat_message, handle_text_message, CHATTING
 from handlers.notes_handler import (
     note_cmd, note_add_start, note_add_receive,
     note_list, note_delete_start, delete_note_callback,
@@ -73,33 +66,23 @@ from handlers.admin_handler import (
     BROADCAST_MSG,
 )
 
-# ─────────────────────────────────────────────
-# LOGGING
-# ─────────────────────────────────────────────
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-# Reduce noise from httpx and telegram internals
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────
-# DAILY REMINDER JOB
-# ─────────────────────────────────────────────
-
 async def send_reminders(ctx: ContextTypes.DEFAULT_TYPE):
-    """Runs every hour. Sends reminder to users whose time matches current hour."""
     import sqlite3
     from datetime import datetime
     hour = datetime.now().strftime("%H")
     try:
         conn = sqlite3.connect("bot_data.db")
-        c    = conn.cursor()
+        c = conn.cursor()
         c.execute(
             "SELECT user_id FROM users WHERE daily_reminder=1 AND reminder_time LIKE ?",
             (f"{hour}:%",)
@@ -119,12 +102,7 @@ async def send_reminders(ctx: ContextTypes.DEFAULT_TYPE):
         logger.error(f"send_reminders error: {e}")
 
 
-# ─────────────────────────────────────────────
-# ERROR HANDLER
-# ─────────────────────────────────────────────
-
 async def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
-    """Log all unhandled errors."""
     logger.error(f"Unhandled exception: {ctx.error}", exc_info=ctx.error)
     if isinstance(update, Update) and update.effective_message:
         try:
@@ -136,13 +114,7 @@ async def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
 
-# ─────────────────────────────────────────────
-# BUILD APPLICATION
-# ─────────────────────────────────────────────
-
 def build_app():
-    """Build and configure the Telegram application with all handlers."""
-
     app = (
         ApplicationBuilder()
         .token(TOKEN)
@@ -152,16 +124,14 @@ def build_app():
         .build()
     )
 
-    # ── Shared fallback commands ──────────────────────────────────────────
     fallbacks = [
-        CommandHandler("cancel",  cancel),
-        CommandHandler("start",   start),
-        CommandHandler("today",   today),
-        CommandHandler("month",   month),
-        CommandHandler("compare", compare),
+        CommandHandler("cancel", cancel),
+        CommandHandler("start",  start),
+        CommandHandler("today",  today),
+        CommandHandler("month",  month),
+        CommandHandler("compare",compare),
     ]
 
-    # ── AI Chat conversation ──────────────────────────────────────────────
     chat_conv = ConversationHandler(
         entry_points=[CommandHandler("chat", chat_cmd)],
         states={CHATTING: [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_message)]},
@@ -169,7 +139,6 @@ def build_app():
         allow_reentry=True,
     )
 
-    # ── Image upscale conversation ────────────────────────────────────────
     upscale_conv = ConversationHandler(
         entry_points=[CommandHandler("upscale", upscale_cmd)],
         states={
@@ -181,7 +150,6 @@ def build_app():
         allow_reentry=True,
     )
 
-    # ── Notes conversation ────────────────────────────────────────────────
     notes_conv = ConversationHandler(
         entry_points=[CommandHandler("note", note_cmd)],
         states={
@@ -192,7 +160,6 @@ def build_app():
         allow_reentry=True,
     )
 
-    # ── Add expense conversation ──────────────────────────────────────────
     add_conv = ConversationHandler(
         entry_points=[CommandHandler("add", add_start)],
         states={
@@ -207,7 +174,6 @@ def build_app():
         allow_reentry=True,
     )
 
-    # ── Budget conversation ───────────────────────────────────────────────
     budget_conv = ConversationHandler(
         entry_points=[CommandHandler("budget", budget_start)],
         states={BUDGET_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, budget_set)]},
@@ -215,7 +181,6 @@ def build_app():
         allow_reentry=True,
     )
 
-    # ── Date search conversation ──────────────────────────────────────────
     date_conv = ConversationHandler(
         entry_points=[CommandHandler("date", date_start)],
         states={SEARCH_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, date_search)]},
@@ -223,7 +188,6 @@ def build_app():
         allow_reentry=True,
     )
 
-    # ── Tag search conversation ───────────────────────────────────────────
     tag_conv = ConversationHandler(
         entry_points=[CommandHandler("tags", tags_start)],
         states={SEARCH_TAG: [MessageHandler(filters.TEXT & ~filters.COMMAND, tag_search)]},
@@ -231,7 +195,6 @@ def build_app():
         allow_reentry=True,
     )
 
-    # ── Delete expense conversation ───────────────────────────────────────
     delete_conv = ConversationHandler(
         entry_points=[CommandHandler("delete", delete_start)],
         states={DELETE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, delete_handler)]},
@@ -239,7 +202,6 @@ def build_app():
         allow_reentry=True,
     )
 
-    # ── Settings conversations ────────────────────────────────────────────
     lang_conv = ConversationHandler(
         entry_points=[CommandHandler("lang", lang_start)],
         states={LANG_CHOOSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, lang_choose)]},
@@ -264,7 +226,6 @@ def build_app():
         allow_reentry=True,
     )
 
-    # ── Admin conversations ───────────────────────────────────────────────
     broadcast_conv = ConversationHandler(
         entry_points=[CommandHandler("broadcast", broadcast_start)],
         states={BROADCAST_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_send)]},
@@ -272,23 +233,11 @@ def build_app():
         allow_reentry=True,
     )
 
-    # ─────────────────────────────────────────
-    # REGISTER ALL HANDLERS
-    # ─────────────────────────────────────────
-
-    # Conversations (must come before standalone command handlers)
-    app.add_handler(chat_conv)
-    app.add_handler(upscale_conv)
-    app.add_handler(notes_conv)
-    app.add_handler(add_conv)
-    app.add_handler(budget_conv)
-    app.add_handler(date_conv)
-    app.add_handler(tag_conv)
-    app.add_handler(delete_conv)
-    app.add_handler(lang_conv)
-    app.add_handler(setpin_conv)
-    app.add_handler(reminder_conv)
-    app.add_handler(broadcast_conv)
+    # Register conversations
+    for conv in [chat_conv, upscale_conv, notes_conv, add_conv, budget_conv,
+                 date_conv, tag_conv, delete_conv, lang_conv, setpin_conv,
+                 reminder_conv, broadcast_conv]:
+        app.add_handler(conv)
 
     # Standalone commands
     app.add_handler(CommandHandler("start",       start))
@@ -300,13 +249,12 @@ def build_app():
     app.add_handler(CommandHandler("compare",     compare))
     app.add_handler(CommandHandler("recurring",   recurring))
     app.add_handler(CommandHandler("ai",          ai_finance))
-    # Admin commands
     app.add_handler(CommandHandler("stats",       stats))
     app.add_handler(CommandHandler("errorlogs",   error_logs_cmd))
     app.add_handler(CommandHandler("maintenance", maintenance_toggle))
     app.add_handler(CommandHandler("restart",     restart_info))
 
-    # Inline callback query handlers (order matters — more specific patterns first)
+    # Callbacks
     app.add_handler(CallbackQueryHandler(image_style_callback,     pattern=r"^imgstyle\|"))
     app.add_handler(CallbackQueryHandler(reimagine_callback,       pattern=r"^reimagine\|"))
     app.add_handler(CallbackQueryHandler(upscale_pending_callback, pattern=r"^upscale_pending$"))
@@ -314,49 +262,37 @@ def build_app():
     app.add_handler(CallbackQueryHandler(note_callback,            pattern=r"^note_"))
     app.add_handler(CallbackQueryHandler(menu_callback,            pattern=r"^menu_|^cancel$"))
 
-    # Fallback: plain text outside conversations → prompt AI chat
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
-
-    # Global error handler
     app.add_error_handler(error_handler)
 
-    # Daily reminder job
     if app.job_queue:
         app.job_queue.run_repeating(send_reminders, interval=3600, first=60)
         logger.info("✅ Job queue: daily reminders scheduled")
-    else:
-        logger.warning("⚠️  Job queue unavailable — install python-telegram-bot[job-queue]")
 
     return app
 
 
-# ─────────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────────
-
 def main():
-    # Validate required config
     if not TOKEN:
-        logger.error("❌ TOKEN is not set! Add TOKEN to your .env file.")
+        logger.error("❌ TOKEN is not set!")
         sys.exit(1)
 
-    if not GEMINI_KEYS:
-        logger.warning("⚠️  No Gemini keys found. AI features will be disabled.")
+    if not GROQ_API_KEY:
+        logger.warning("⚠️  No GROQ_API_KEY found. AI features disabled.")
+        logger.warning("   Get a free key at: https://console.groq.com")
     else:
-        logger.info(f"✅ Gemini: {len(GEMINI_KEYS)} key(s) loaded")
+        logger.info("✅ Groq AI: configured")
 
     if not ADMIN_IDS:
-        logger.warning("⚠️  No ADMIN_IDS set. Admin commands will be inaccessible.")
+        logger.warning("⚠️  No ADMIN_IDS set.")
     else:
         logger.info(f"✅ Admins: {ADMIN_IDS}")
 
-    # Start Flask health server (for Render uptime)
+    from web import start_health_server
+    from config import PORT
     start_health_server(PORT)
-
-    # Initialize database
     init_db()
 
-    # Auto-reconnect loop
     while True:
         try:
             logger.info("🤖 Starting bot...")
@@ -366,7 +302,7 @@ def main():
                 drop_pending_updates=True,
             )
         except KeyboardInterrupt:
-            logger.info("🛑 Bot stopped by user.")
+            logger.info("🛑 Bot stopped.")
             break
         except Exception as e:
             logger.error(f"❌ Bot crashed: {e}")

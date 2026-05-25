@@ -10,7 +10,7 @@ from telegram.constants import ParseMode
 
 from database import ensure_user, get_language, set_language, clear_chat_history
 from utils import main_menu_keyboard, back_button
-from config import MAINTENANCE_MODE
+import config as _cfg
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ensure_user(user.id, user.username or "")
 
-    if MAINTENANCE_MODE:
+    if _cfg.MAINTENANCE_MODE:
         await update.message.reply_text(
             "🔧 *Bot is under maintenance.*\nPlease come back later!",
             parse_mode=ParseMode.MARKDOWN
