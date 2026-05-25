@@ -8,8 +8,13 @@ import sqlite3
 import logging
 from functools import wraps
 from datetime import datetime, timedelta
-from flask import Flask, render_template_string, request, session, redirect, url_for, jsonify
+from flask import Flask, render_template_string, request, session, redirect, url_for, jsonify, Response
 import threading
+
+
+def html_response(content):
+    """Return proper HTML response."""
+    return Response(content, mimetype='text/html; charset=utf-8')
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +346,12 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
     flask_app.secret_key = secret_key
     global DASHBOARD_PASSWORD
     DASHBOARD_PASSWORD = password
+
+    @flask_app.after_request
+    def set_html_type(response):
+        if response.status_code == 200 and b'<!DOCTYPE html>' in response.get_data()[:50]:
+            response.headers['Content-Type'] = 'text/html; charset=utf-8'
+        return response
 
     # ── LOGIN ──
     @flask_app.route("/admin/login", methods=["GET", "POST"])
