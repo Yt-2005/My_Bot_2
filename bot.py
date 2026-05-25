@@ -97,13 +97,18 @@ async def send_reminders(ctx: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
             except Exception as e:
-                logger.warning(f"Reminder failed for {uid}: {e}")
+                logger.warning(f"ការផ្ញើរំលឹកបរាជ័យសម្រាប់ {uid}: {e}")
     except Exception as e:
-        logger.error(f"send_reminders error: {e}")
+        logger.error(f"កំហុស send_reminders: {e}")
 
 
 async def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Unhandled exception: {ctx.error}", exc_info=ctx.error)
+    from telegram.error import Conflict
+    if isinstance(ctx.error, Conflict):
+        logger.warning("⚠️  Conflict — instance ចាស់នៅមិនទាន់បិទ។ រង់ចាំ 10 វិនាទី...")
+        await asyncio.sleep(10)
+        return
+    logger.error(f"កំហុសដែលមិនបានដោះស្រាយ: {ctx.error}", exc_info=ctx.error)
     if isinstance(update, Update) and update.effective_message:
         try:
             await update.effective_message.reply_text(
@@ -119,9 +124,9 @@ async def post_init(application):
     """Clear any existing webhook and pending updates from previous instance."""
     try:
         await application.bot.delete_webhook(drop_pending_updates=True)
-        logger.info("✅ Webhook cleared, pending updates dropped")
+        logger.info("✅ Webhook បានលុបចោល និង updates រង់ចាំត្រូវបានលុប")
     except Exception as e:
-        logger.warning(f"post_init cleanup warning: {e}")
+        logger.warning(f"⚠️  ការសម្អាត post_init មានបញ្ហា: {e}")
 
 
 def build_app():
@@ -278,40 +283,24 @@ def build_app():
 
     if app.job_queue:
         app.job_queue.run_repeating(send_reminders, interval=3600, first=60)
-        logger.info("✅ Job queue: daily reminders scheduled")
+        logger.info("✅ Job queue: កំណត់ការរំលឹករាល់ថ្ងៃរួចរាល់")
 
     return app
 
 
 async def run_bot():
-    from telegram.error import Conflict
-
-    logger.info("🤖 Starting bot...")
-    logger.info("⏳ Waiting 15s for previous instance to release polling lock...")
-    await asyncio.sleep(15)
+    logger.info("🤖 កំពុងចាប់ផ្តើម bot...")
+    logger.info("⏳ រង់ចាំ 20 វិនាទី ដើម្បីឱ្យ instance ចាស់បិទឱ្យស្រេច...")
+    await asyncio.sleep(20)
 
     app = build_app()
     await app.initialize()   # triggers post_init → delete_webhook
     await app.start()
-
-    # Retry loop — keeps trying until the old instance fully dies
-    for attempt in range(1, 11):
-        try:
-            await app.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-            )
-            logger.info("✅ Bot is polling")
-            break
-        except Conflict:
-            logger.warning(f"⚠️  Conflict on attempt {attempt}/10 — retrying in 10s...")
-            await asyncio.sleep(10)
-    else:
-        logger.error("❌ Could not start polling after 10 attempts. Exiting.")
-        await app.stop()
-        await app.shutdown()
-        sys.exit(1)
-
+    await app.updater.start_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+    )
+    logger.info("✅ Bot កំពុង polling រួចរាល់")
     await asyncio.Event().wait()  # run forever
     await app.updater.stop()
     await app.stop()
@@ -320,18 +309,18 @@ async def run_bot():
 
 def main():
     if not TOKEN:
-        logger.error("❌ TOKEN is not set!")
+        logger.error("❌ TOKEN មិនត្រូវបានកំណត់ទេ!")
         sys.exit(1)
 
     if not GROQ_API_KEY:
-        logger.warning("⚠️  No GROQ_API_KEY found. AI features disabled.")
+        logger.warning("⚠️  មិនមាន GROQ_API_KEY។ មុខងារ AI ត្រូវបានបិទ។")
     else:
-        logger.info("✅ Groq AI: configured")
+        logger.info("✅ Groq AI: បានកំណត់រួចរាល់")
 
     if not ADMIN_IDS:
-        logger.warning("⚠️  No ADMIN_IDS set.")
+        logger.warning("⚠️  មិនមាន ADMIN_IDS ត្រូវបានកំណត់ទេ។")
     else:
-        logger.info(f"✅ Admins: {ADMIN_IDS}")
+        logger.info(f"✅ អ្នកគ្រប់គ្រង: {ADMIN_IDS}")
 
     from web import start_health_server
     from config import PORT
