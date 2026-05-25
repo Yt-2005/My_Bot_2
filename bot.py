@@ -114,6 +114,16 @@ async def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
 
+# ── Called once after app is initialized, before polling starts ──
+async def post_init(application):
+    """Clear any existing webhook and pending updates from previous instance."""
+    try:
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("✅ Webhook cleared, pending updates dropped")
+    except Exception as e:
+        logger.warning(f"post_init cleanup warning: {e}")
+
+
 def build_app():
     app = (
         ApplicationBuilder()
@@ -121,6 +131,7 @@ def build_app():
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
+        .post_init(post_init)   # ← clears old instance's polling lock
         .build()
     )
 
@@ -274,14 +285,21 @@ def build_app():
 
 async def run_bot():
     logger.info("🤖 Starting bot...")
+
+    # Give the previous Render instance time to fully shut down
+    # before we start polling, avoiding the Conflict error
+    logger.info("⏳ Waiting 5s for previous instance to release polling lock...")
+    await asyncio.sleep(5)
+
     app = build_app()
-    await app.initialize()
+    await app.initialize()   # triggers post_init → delete_webhook
     await app.start()
     await app.updater.start_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
     )
-    await asyncio.Event().wait()  # រត់រហូត
+    logger.info("✅ Bot is polling")
+    await asyncio.Event().wait()  # run forever
     await app.updater.stop()
     await app.stop()
     await app.shutdown()
