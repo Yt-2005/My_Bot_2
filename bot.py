@@ -272,6 +272,21 @@ def build_app():
     return app
 
 
+async def run_bot():
+    logger.info("🤖 Starting bot...")
+    app = build_app()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+    )
+    await asyncio.Event().wait()  # រត់រហូត
+    await app.updater.stop()
+    await app.stop()
+    await app.shutdown()
+
+
 def main():
     if not TOKEN:
         logger.error("❌ TOKEN is not set!")
@@ -279,7 +294,6 @@ def main():
 
     if not GROQ_API_KEY:
         logger.warning("⚠️  No GROQ_API_KEY found. AI features disabled.")
-        logger.warning("   Get a free key at: https://console.groq.com")
     else:
         logger.info("✅ Groq AI: configured")
 
@@ -293,21 +307,7 @@ def main():
     start_health_server(PORT)
     init_db()
 
-    while True:
-        try:
-            logger.info("🤖 Starting bot...")
-            app = build_app()
-            app.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-            )
-        except KeyboardInterrupt:
-            logger.info("🛑 Bot stopped.")
-            break
-        except Exception as e:
-            logger.error(f"❌ Bot crashed: {e}")
-            logger.info("🔄 Restarting in 5 seconds...")
-            time.sleep(5)
+    asyncio.run(run_bot())
 
 
 if __name__ == "__main__":
