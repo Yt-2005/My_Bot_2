@@ -284,21 +284,34 @@ def build_app():
 
 
 async def run_bot():
-    logger.info("🤖 Starting bot...")
+    from telegram.error import Conflict
 
-    # Give the previous Render instance time to fully shut down
-    # before we start polling, avoiding the Conflict error
-    logger.info("⏳ Waiting 5s for previous instance to release polling lock...")
-    await asyncio.sleep(5)
+    logger.info("🤖 Starting bot...")
+    logger.info("⏳ Waiting 15s for previous instance to release polling lock...")
+    await asyncio.sleep(15)
 
     app = build_app()
     await app.initialize()   # triggers post_init → delete_webhook
     await app.start()
-    await app.updater.start_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
-    )
-    logger.info("✅ Bot is polling")
+
+    # Retry loop — keeps trying until the old instance fully dies
+    for attempt in range(1, 11):
+        try:
+            await app.updater.start_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+            )
+            logger.info("✅ Bot is polling")
+            break
+        except Conflict:
+            logger.warning(f"⚠️  Conflict on attempt {attempt}/10 — retrying in 10s...")
+            await asyncio.sleep(10)
+    else:
+        logger.error("❌ Could not start polling after 10 attempts. Exiting.")
+        await app.stop()
+        await app.shutdown()
+        sys.exit(1)
+
     await asyncio.Event().wait()  # run forever
     await app.updater.stop()
     await app.stop()
