@@ -141,7 +141,7 @@ def build_app():
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
-        .updater(None)  # ← បិទ built-in updater ព្រោះប្រើ Flask webhook
+        .updater(None)
         .build()
     )
 
@@ -297,20 +297,12 @@ def create_flask_app(ptb_app):
     """បង្កើត Flask app ជាមួយ webhook route"""
     flask_app = Flask(__name__)
 
-    # ── Register admin dashboard ──
+    # ── Register admin dashboard (ជាមួយ ADMIN_IDS សម្រាប់ super_admin) ──
     try:
-        register_dashboard(flask_app)
+        register_dashboard(flask_app, super_admin_ids=ADMIN_IDS)
         logger.info("✅ Admin dashboard registered at /admin")
     except Exception as e:
         logger.warning(f"⚠️ Dashboard: {e}")
-
-    @flask_app.get("/ping")
-    def ping():
-        return "pong", 200
-
-    @flask_app.get("/health")
-    def health():
-        return jsonify({"status": "ok"}), 200
 
     @flask_app.post(WEBHOOK_PATH)
     def webhook():
