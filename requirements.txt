@@ -1,6 +1,5 @@
 # Telegram bot framework (with job-queue)
-python-telegram-bot[webhooks]==21.6
-# Groq AI SDK
+python-telegram-bot[job-queue,webhooks]==21.6# Groq AI SDK
 groq==1.2.0
 
 # HTTP client for async image generation
