@@ -337,7 +337,8 @@ def render_page(content, page="", logged_in=True):
 # ROUTES
 # ────────────────────────────────────────────────────────────────
 
-def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", password: str = "admin1234"):
+def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", password: str = "admin1234", super_admin_ids=None):
+    super_admin_ids = list(super_admin_ids or [])
     flask_app.secret_key = secret_key
     global DASHBOARD_PASSWORD
     DASHBOARD_PASSWORD = password
@@ -366,7 +367,8 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
             </form>
           </div>
         </div>"""
-        return render_template_string(BASE_HTML, content=content, logged_in=False, page="")
+        from flask import Markup
+        return render_template_string(BASE_HTML, content=Markup(content), logged_in=False, page="")
 
     # ── LOGOUT ──
     @flask_app.route("/admin/logout")
