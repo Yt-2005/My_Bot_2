@@ -297,12 +297,22 @@ def create_flask_app(ptb_app):
     """បង្កើត Flask app ជាមួយ webhook route"""
     flask_app = Flask(__name__)
 
-    # ── Register admin dashboard (ជាមួយ ADMIN_IDS សម្រាប់ super_admin) ──
+    # ── Register admin dashboard ──
     try:
         register_dashboard(flask_app, super_admin_ids=ADMIN_IDS)
         logger.info("✅ Admin dashboard registered at /admin")
     except Exception as e:
         logger.warning(f"⚠️ Dashboard: {e}")
+
+    # ✅ Health Check សម្រាប់ Render
+    @flask_app.get("/ping")
+    def ping():
+        return "OK", 200
+
+    # ✅ Root route
+    @flask_app.get("/")
+    def index():
+        return "🤖 Bot is running!", 200
 
     @flask_app.post(WEBHOOK_PATH)
     def webhook():
