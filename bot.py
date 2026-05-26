@@ -314,7 +314,7 @@ def build_app():
 async def run_bot():
     logger.info("🤖 កំពុងចាប់ផ្តើម bot...")
     logger.info("⏳ រង់ចាំ 30 វិនាទី ដើម្បីឱ្យ instance ចាស់បិទឱ្យស្រេច...")
-    await asyncio.sleep(30)
+    await asyncio.sleep(60)
 
     max_retries = 5
     app = None
