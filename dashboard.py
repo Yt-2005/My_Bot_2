@@ -1,10 +1,12 @@
+
 """
 dashboard.py — Admin Dashboard for Telegram Bot
 Accessible at /admin — password protected
 Features: Rate limiting, CSRF, session timeout, audit log, user notes viewer,
-          analytics, banned users, system info, broadcast with preview, DB export
+          analytics, banned users, system info, broadcast with preview, DB export,
+          Admin Level Management (Super Admin / Admin / Moderator)
 """
-
+ 
 import sqlite3
 import logging
 import os
@@ -15,38 +17,48 @@ import secrets
 from functools import wraps
 from datetime import datetime, timedelta
 from flask import request, session, redirect, jsonify, Response, make_response
-
+ 
+from admin_levels import (
+    init_admin_table, get_admin_level, has_permission,
+    list_admins, add_admin, remove_admin, update_level,
+    LEVELS, LEVEL_ORDER,
+)
+ 
 logger = logging.getLogger(__name__)
-
+ 
 _bot_app = None
 _proc_start = _time.time()
-
-# ── In-memory rate limiting & audit log ──
-_login_attempts: dict = {}   # ip -> [timestamps]
-_audit_log: list = []        # max 500 entries
-_active_sessions: dict = {}  # session_token -> {ip, created_at}
-
+ 
+_login_attempts: dict = {}
+_audit_log: list = []
+_active_sessions: dict = {}  # token -> {ip, created_at, user_id}
+ 
 MAX_LOGIN_ATTEMPTS = 5
-LOGIN_WINDOW = 300           # 5 min window
-SESSION_TIMEOUT = 3600       # 1 hour
-
+LOGIN_WINDOW = 300
+SESSION_TIMEOUT = 3600
+ 
+ 
 def set_bot_app(app):
     global _bot_app
     _bot_app = app
-
+ 
+ 
 DB_PATH = "bot_data.db"
-
+ 
+ 
 def db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
-
+ 
+ 
 def _table_exists(conn, name):
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,)
     ).fetchone()
     return row is not None
-
+ 
+ 
 def _audit(action: str, detail: str = "", ip: str = ""):
     _audit_log.append({
         "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
@@ -56,18 +68,20 @@ def _audit(action: str, detail: str = "", ip: str = ""):
     })
     if len(_audit_log) > 500:
         _audit_log.pop(0)
-
+ 
+ 
 def _check_rate_limit(ip: str) -> bool:
-    """Returns True if rate limited."""
     now = _time.time()
     attempts = _login_attempts.get(ip, [])
     attempts = [t for t in attempts if now - t < LOGIN_WINDOW]
     _login_attempts[ip] = attempts
     return len(attempts) >= MAX_LOGIN_ATTEMPTS
-
+ 
+ 
 def _record_attempt(ip: str):
     _login_attempts.setdefault(ip, []).append(_time.time())
-
+ 
+ 
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -79,29 +93,27 @@ def login_required(f):
             del _active_sessions[token]
             session.clear()
             return jsonify({"error": "Session expired"}), 401
-        # Refresh session
         _active_sessions[token]["created_at"] = _time.time()
         return f(*args, **kwargs)
     return decorated
-
-
-   
-
-
+ 
+ 
 # ─────────────────────────────────────────────
 # REGISTER ROUTES
 # ─────────────────────────────────────────────
-def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
+def register_dashboard(flask_app, secret_key="secret", password="admin1234", super_admin_ids=None):
+    super_admin_ids = list(super_admin_ids or [])
+    init_admin_table()
+ 
     flask_app.secret_key = secret_key
     DASHBOARD_PASSWORD = password
-
-    # ── SERVE SPA ──
+ 
     @flask_app.route("/admin")
     @flask_app.route("/admin/")
     def admin_index():
         return ADMIN_HTML
-
-    # ── LOGIN API (rate-limited) ──
+ 
+    # ── LOGIN ──
     @flask_app.route("/admin/api/login", methods=["POST"])
     def api_login():
         ip = request.remote_addr or "unknown"
@@ -111,24 +123,25 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
         data = request.get_json() or {}
         if data.get("password") == DASHBOARD_PASSWORD:
             token = secrets.token_hex(32)
+            # Try to get user_id from submitted field (optional)
+            uid = int(data.get("user_id", 0) or 0)
             session["admin_token"] = token
-            _active_sessions[token] = {"ip": ip, "created_at": _time.time()}
-            _audit("LOGIN_SUCCESS", f"Admin logged in", ip)
+            _active_sessions[token] = {"ip": ip, "created_at": _time.time(), "user_id": uid}
+            _audit("LOGIN_SUCCESS", "Admin logged in", ip)
             return jsonify({"ok": True})
         _record_attempt(ip)
         _audit("LOGIN_FAIL", f"Wrong password from {ip}", ip)
         return jsonify({"error": "❌ Wrong password"}), 401
-
+ 
     @flask_app.route("/admin/api/logout", methods=["POST"])
     def api_logout():
         token = session.get("admin_token")
         if token and token in _active_sessions:
             del _active_sessions[token]
-        ip = request.remote_addr or "unknown"
-        _audit("LOGOUT", "", ip)
+        _audit("LOGOUT", "", request.remote_addr or "")
         session.clear()
         return jsonify({"ok": True})
-
+ 
     @flask_app.route("/admin/api/check")
     def api_check():
         token = session.get("admin_token")
@@ -136,8 +149,24 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
             if _time.time() - _active_sessions[token]["created_at"] < SESSION_TIMEOUT:
                 return jsonify({"ok": True})
         return jsonify({"error": "Not logged in"}), 401
-
-    # ── DASHBOARD API ──
+ 
+    # ── WHO AM I ──
+    @flask_app.route("/admin/api/me")
+    @login_required
+    def api_me():
+        token = session.get("admin_token")
+        uid = _active_sessions.get(token, {}).get("user_id", 0)
+        level = get_admin_level(uid, super_admin_ids) or "unknown"
+        perms = LEVELS.get(level, {}).get("permissions", [])
+        return jsonify({
+            "user_id": uid,
+            "level": level,
+            "level_label": LEVELS.get(level, {}).get("label", level),
+            "level_color": LEVELS.get(level, {}).get("color", "#888"),
+            "permissions": perms,
+        })
+ 
+    # ── DASHBOARD ──
     @flask_app.route("/admin/api/dashboard")
     @login_required
     def api_dashboard():
@@ -164,8 +193,8 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
             "recent_users": recent_users, "recent_expenses": recent_expenses,
             "expense_by_cat": expense_by_cat,
         })
-
-    # ── ANALYTICS API ──
+ 
+    # ── ANALYTICS ──
     @flask_app.route("/admin/api/analytics")
     @login_required
     def api_analytics():
@@ -193,8 +222,8 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
             "total_users": total_users, "monthly": monthly,
             "top_tags": top_tags, "languages": languages,
         })
-
-    # ── USERS API ──
+ 
+    # ── USERS ──
     @flask_app.route("/admin/api/users")
     @login_required
     def api_users():
@@ -213,8 +242,7 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
         for u in users:
             u["banned"] = u["user_id"] in banned_ids
         return jsonify(users)
-
-    # ── USER DETAIL API ──
+ 
     @flask_app.route("/admin/api/user/<int:uid>")
     @login_required
     def api_user_detail(uid):
@@ -232,11 +260,15 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
         ).fetchall()]
         conn.close()
         return jsonify(u)
-
+ 
     # ── BAN / UNBAN ──
     @flask_app.route("/admin/api/ban/<int:uid>", methods=["POST"])
     @login_required
     def api_ban(uid):
+        token = session.get("admin_token")
+        requester_id = _active_sessions.get(token, {}).get("user_id", 0)
+        if not has_permission(requester_id, "ban_user", super_admin_ids):
+            return jsonify({"error": "⛔ No permission"}), 403
         conn = db()
         if not _table_exists(conn, "banned_users"):
             conn.execute("CREATE TABLE IF NOT EXISTS banned_users (user_id INTEGER PRIMARY KEY)")
@@ -244,17 +276,21 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
         conn.commit(); conn.close()
         _audit("BAN_USER", f"Banned user {uid}", request.remote_addr)
         return jsonify({"ok": True})
-
+ 
     @flask_app.route("/admin/api/unban/<int:uid>", methods=["POST"])
     @login_required
     def api_unban(uid):
+        token = session.get("admin_token")
+        requester_id = _active_sessions.get(token, {}).get("user_id", 0)
+        if not has_permission(requester_id, "unban_user", super_admin_ids):
+            return jsonify({"error": "⛔ No permission"}), 403
         conn = db()
         conn.execute("DELETE FROM banned_users WHERE user_id=?", (uid,))
         conn.commit(); conn.close()
         _audit("UNBAN_USER", f"Unbanned user {uid}", request.remote_addr)
         return jsonify({"ok": True})
-
-    # ── EXPENSES API ──
+ 
+    # ── EXPENSES ──
     @flask_app.route("/admin/api/expenses")
     @login_required
     def api_expenses():
@@ -273,8 +309,8 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
         ).fetchall()]
         conn.close()
         return jsonify({"by_category": by_cat, "by_month": by_month, "top_users": top_users, "all": all_exp})
-
-    # ── NOTES API ──
+ 
+    # ── NOTES ──
     @flask_app.route("/admin/api/notes")
     @login_required
     def api_notes():
@@ -284,20 +320,28 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
         ).fetchall()]
         conn.close()
         return jsonify(notes)
-
+ 
     @flask_app.route("/admin/api/note/<int:nid>", methods=["DELETE"])
     @login_required
     def api_delete_note(nid):
+        token = session.get("admin_token")
+        requester_id = _active_sessions.get(token, {}).get("user_id", 0)
+        if not has_permission(requester_id, "delete_note", super_admin_ids):
+            return jsonify({"error": "⛔ No permission"}), 403
         conn = db()
         conn.execute("DELETE FROM notes WHERE id=?", (nid,))
         conn.commit(); conn.close()
         _audit("DELETE_NOTE", f"Note #{nid} deleted", request.remote_addr)
         return jsonify({"ok": True})
-
-    # ── BROADCAST API ──
+ 
+    # ── BROADCAST ──
     @flask_app.route("/admin/api/broadcast", methods=["POST"])
     @login_required
     def api_broadcast():
+        token = session.get("admin_token")
+        requester_id = _active_sessions.get(token, {}).get("user_id", 0)
+        if not has_permission(requester_id, "broadcast", super_admin_ids):
+            return jsonify({"error": "⛔ No permission"}), 403
         data = request.get_json() or {}
         message = data.get("message", "").strip()
         target = data.get("target", "all")
@@ -310,7 +354,6 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
         if target == "specific" and uid:
             user_ids = [int(uid)]
         elif target == "active":
-            from datetime import timedelta
             since = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
             user_ids = [r[0] for r in conn.execute(
                 "SELECT DISTINCT user_id FROM expenses WHERE date >= ?", (since,)
@@ -332,7 +375,7 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
                         parse_mode="Markdown"
                     )
                     sent += 1
-                    await asyncio.sleep(0.05)  # Avoid rate limit
+                    await asyncio.sleep(0.05)
                 except Exception:
                     failed += 1
         try:
@@ -343,8 +386,8 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
             return jsonify({"error": str(e)}), 500
         _audit("BROADCAST", f"Sent to {sent} users (target={target})", request.remote_addr)
         return jsonify({"sent": sent, "failed": failed})
-
-    # ── MAINTENANCE API ──
+ 
+    # ── MAINTENANCE ──
     @flask_app.route("/admin/api/maintenance")
     @login_required
     def api_maintenance():
@@ -370,17 +413,21 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
             "token_status": "✅ Set" if os.environ.get("TOKEN") else "❌ Not set",
             "groq_status": "✅ Set" if os.environ.get("GROQ_API_KEY") else "❌ Not set",
         })
-
+ 
     @flask_app.route("/admin/api/maintenance/toggle", methods=["POST"])
     @login_required
     def api_maintenance_toggle():
+        token = session.get("admin_token")
+        requester_id = _active_sessions.get(token, {}).get("user_id", 0)
+        if not has_permission(requester_id, "maintenance", super_admin_ids):
+            return jsonify({"error": "⛔ No permission"}), 403
         import config as cfg
         data = request.get_json() or {}
         cfg.MAINTENANCE_MODE = bool(data.get("enabled", False))
         _audit("MAINTENANCE_TOGGLE", f"Mode={'ON' if cfg.MAINTENANCE_MODE else 'OFF'}", request.remote_addr)
         return jsonify({"ok": True, "maintenance_mode": cfg.MAINTENANCE_MODE})
-
-    # ── SECURITY API ──
+ 
+    # ── SECURITY ──
     @flask_app.route("/admin/api/security")
     @login_required
     def api_security():
@@ -391,19 +438,18 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
         banned = [dict(r) for r in conn.execute("SELECT user_id FROM banned_users").fetchall()]
         conn.close()
         now = _time.time()
-        # Rate limit summary (count of recent attempts per IP)
         rate_summary = {}
         for ip, times in _login_attempts.items():
             recent = [t for t in times if now - t < LOGIN_WINDOW]
             if recent:
                 rate_summary[ip] = len(recent)
-        # Active sessions info
         sessions_info = []
         for token, sess in _active_sessions.items():
             remaining = SESSION_TIMEOUT - (now - sess["created_at"])
             sessions_info.append({
                 "token_hint": token[:8] + "...",
                 "ip": sess["ip"],
+                "user_id": sess.get("user_id", 0),
                 "created": datetime.utcfromtimestamp(sess["created_at"]).strftime("%Y-%m-%d %H:%M"),
                 "expires_in": f"{int(remaining//60)}m {int(remaining%60)}s",
             })
@@ -413,15 +459,15 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
             "rate_limits": rate_summary,
             "active_sessions": sessions_info,
         })
-
+ 
     @flask_app.route("/admin/api/security/clear-rate-limits", methods=["POST"])
     @login_required
     def api_clear_rate_limits():
         _login_attempts.clear()
         _audit("CLEAR_RATE_LIMITS", "", request.remote_addr)
         return jsonify({"ok": True})
-
-    # ── ERRORS API ──
+ 
+    # ── ERRORS ──
     @flask_app.route("/admin/api/errors")
     @login_required
     def api_errors():
@@ -433,10 +479,14 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
         ).fetchall()]
         conn.close()
         return jsonify(errors)
-
+ 
     @flask_app.route("/admin/api/errors/clear", methods=["POST"])
     @login_required
     def api_clear_errors():
+        token = session.get("admin_token")
+        requester_id = _active_sessions.get(token, {}).get("user_id", 0)
+        if not has_permission(requester_id, "clear_errors", super_admin_ids):
+            return jsonify({"error": "⛔ No permission"}), 403
         conn = db()
         if _table_exists(conn, "error_logs"):
             conn.execute("DELETE FROM error_logs")
@@ -444,11 +494,14 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
         conn.close()
         _audit("CLEAR_ERRORS", "", request.remote_addr)
         return jsonify({"ok": True})
-
-    # ── CHAT MEMORY CLEAR ──
+ 
     @flask_app.route("/admin/api/chat/clear", methods=["POST"])
     @login_required
     def api_clear_chat():
+        token = session.get("admin_token")
+        requester_id = _active_sessions.get(token, {}).get("user_id", 0)
+        if not has_permission(requester_id, "clear_chat", super_admin_ids):
+            return jsonify({"error": "⛔ No permission"}), 403
         conn = db()
         if _table_exists(conn, "chat_memory"):
             conn.execute("DELETE FROM chat_memory")
@@ -456,17 +509,19 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
         conn.close()
         _audit("CLEAR_CHAT_MEMORY", "Cleared all users", request.remote_addr)
         return jsonify({"ok": True})
-
-    # ── AUDIT LOG ──
+ 
     @flask_app.route("/admin/api/audit")
     @login_required
     def api_audit():
         return jsonify(list(reversed(_audit_log)))
-
-    # ── EXPORT DATA ──
+ 
     @flask_app.route("/admin/api/export")
     @login_required
     def api_export():
+        token = session.get("admin_token")
+        requester_id = _active_sessions.get(token, {}).get("user_id", 0)
+        if not has_permission(requester_id, "export_data", super_admin_ids):
+            return jsonify({"error": "⛔ No permission"}), 403
         conn = db()
         users    = [dict(r) for r in conn.execute("SELECT user_id, username, language, budget, daily_reminder, created_at FROM users").fetchall()]
         expenses = [dict(r) for r in conn.execute("SELECT id, user_id, category, amount, note, tag, is_recurring, date FROM expenses").fetchall()]
@@ -476,10 +531,112 @@ def register_dashboard(flask_app, secret_key="secret", password="admin1234"):
             "exported_at": datetime.utcnow().isoformat(),
             "users": users, "expenses": expenses, "notes": notes,
         }
-        _audit("EXPORT_DATA", f"Exported {len(users)} users, {len(expenses)} expenses", request.remote_addr)
+        _audit("EXPORT_DATA", f"Exported {len(users)} users", request.remote_addr)
         resp = make_response(json.dumps(data, indent=2))
         resp.headers["Content-Type"] = "application/json"
         resp.headers["Content-Disposition"] = f"attachment; filename=bot_export_{datetime.now().strftime('%Y%m%d')}.json"
         return resp
-
+ 
+    @flask_app.get("/ping")
+    def ping():
+        return "pong", 200
+ 
+    @flask_app.get("/health")
+    def health():
+        return jsonify({"status": "ok"}), 200
+ 
+    # ══════════════════════════════════════════════════════
+    # 👑 ADMIN LEVEL MANAGEMENT ROUTES
+    # ══════════════════════════════════════════════════════
+ 
+    @flask_app.route("/admin/api/admins")
+    @login_required
+    def api_admin_list():
+        admins_db = list_admins()
+        db_ids = {a["user_id"] for a in admins_db}
+        # Inject super_admins from config (not stored in DB)
+        sa_list = []
+        for uid in super_admin_ids:
+            if uid not in db_ids:
+                sa_list.append({
+                    "user_id": uid,
+                    "username": "",
+                    "level": "super_admin",
+                    "added_by": None,
+                    "added_at": "—",
+                })
+        all_admins = sa_list + admins_db
+        for a in all_admins:
+            a["level_label"] = LEVELS.get(a["level"], {}).get("label", a["level"])
+            a["level_color"] = LEVELS.get(a["level"], {}).get("color", "#888")
+            a["is_super"] = a["level"] == "super_admin"
+            a["can_remove"] = a["level"] != "super_admin"
+        return jsonify(all_admins)
+ 
+    @flask_app.route("/admin/api/admins/levels")
+    @login_required
+    def api_admin_levels_info():
+        return jsonify([
+            {
+                "level": k,
+                "label": v["label"],
+                "color": v["color"],
+                "permissions": v["permissions"],
+            }
+            for k, v in LEVELS.items()
+        ])
+ 
+    @flask_app.route("/admin/api/admins/add", methods=["POST"])
+    @login_required
+    def api_admin_add():
+        token = session.get("admin_token")
+        requester_id = _active_sessions.get(token, {}).get("user_id", 0)
+        if not has_permission(requester_id, "manage_admins", super_admin_ids):
+            return jsonify({"error": "⛔ Super Admin only"}), 403
+        data = request.get_json() or {}
+        uid   = data.get("user_id")
+        uname = data.get("username", "")
+        level = data.get("level", "moderator")
+        if not uid:
+            return jsonify({"error": "user_id required"}), 400
+        if level == "super_admin":
+            return jsonify({"error": "Cannot assign super_admin via dashboard"}), 400
+        ok = add_admin(int(uid), uname, level, requester_id)
+        if ok:
+            _audit("ADMIN_ADD", f"Added user {uid} as {level}", request.remote_addr)
+            return jsonify({"ok": True})
+        return jsonify({"error": "Invalid level"}), 400
+ 
+    @flask_app.route("/admin/api/admins/<int:uid>/level", methods=["POST"])
+    @login_required
+    def api_admin_change_level(uid):
+        token = session.get("admin_token")
+        requester_id = _active_sessions.get(token, {}).get("user_id", 0)
+        if not has_permission(requester_id, "manage_admins", super_admin_ids):
+            return jsonify({"error": "⛔ Super Admin only"}), 403
+        if uid in super_admin_ids:
+            return jsonify({"error": "Cannot change Super Admin level"}), 400
+        data = request.get_json() or {}
+        new_level = data.get("level")
+        if new_level == "super_admin":
+            return jsonify({"error": "Cannot assign super_admin via dashboard"}), 400
+        ok = update_level(uid, new_level, requester_id)
+        if ok:
+            _audit("ADMIN_LEVEL_CHANGE", f"User {uid} → {new_level}", request.remote_addr)
+            return jsonify({"ok": True})
+        return jsonify({"error": "Invalid level"}), 400
+ 
+    @flask_app.route("/admin/api/admins/<int:uid>/remove", methods=["POST"])
+    @login_required
+    def api_admin_remove(uid):
+        token = session.get("admin_token")
+        requester_id = _active_sessions.get(token, {}).get("user_id", 0)
+        if not has_permission(requester_id, "manage_admins", super_admin_ids):
+            return jsonify({"error": "⛔ Super Admin only"}), 403
+        if uid in super_admin_ids:
+            return jsonify({"error": "Cannot remove Super Admin"}), 400
+        remove_admin(uid)
+        _audit("ADMIN_REMOVE", f"Removed admin {uid}", request.remote_addr)
+        return jsonify({"ok": True})
+ 
     logger.info("✅ Admin dashboard registered at /admin")
