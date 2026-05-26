@@ -3,7 +3,6 @@ bot.py — Main entry point for the Telegram Bot
 """
 
 import sys
-import time
 import logging
 import asyncio
 
@@ -18,7 +17,7 @@ if sys.version_info >= (3, 13):
 
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ConversationHandler, filters,
+    CallbackQueryHandler, ConversationHandler, TypeHandler, filters,
 )
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -76,6 +75,18 @@ logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+# ══════════════════════════════════════════════════════
+# 🛡️ GLOBAL BOT BLOCKER
+# ទប់ bots ទាំងអស់ មុន handler ណាមួយត្រូវបានហៅ
+# ══════════════════════════════════════════════════════
+async def block_bots(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """ទប់ bots ទាំងអស់ — រត់ក្នុង group=-1 (មុន handler ទាំងអស់)"""
+    user = update.effective_user
+    if user and user.is_bot:
+        logger.warning(f"🚫 Bot ត្រូវបាន block: @{user.username or user.id}")
+        raise ApplicationHandlerStop  # បញ្ឈប់ processing ទាំងស្រុង
+
+
 async def send_reminders(ctx: ContextTypes.DEFAULT_TYPE):
     import sqlite3
     from datetime import datetime
@@ -89,15 +100,17 @@ async def send_reminders(ctx: ContextTypes.DEFAULT_TYPE):
         )
         rows = c.fetchall()
         conn.close()
-        for (uid,) in rows:
-            try:
-                await ctx.bot.send_message(
-                    uid,
-                    "⏰ *Daily Reminder!*\n\nDon't forget to log your expenses today! 💰\n\nUse /add to record a new expense.",
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.warning(f"ការផ្ញើរំលឹកបរាជ័យសម្រាប់ {uid}: {e}")
+        if rows:
+            logger.info(f"📨 ផ្ញើរំលឹកទៅ {len(rows)} នាក់")
+            for (uid,) in rows:
+                try:
+                    await ctx.bot.send_message(
+                        uid,
+                        "⏰ *Daily Reminder!*\n\nDon't forget to log your expenses today! 💰\n\nUse /add to record a new expense.",
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    logger.warning(f"រំលឹកបរាជ័យ {uid}: {e}")
     except Exception as e:
         logger.error(f"កំហុស send_reminders: {e}")
 
@@ -119,10 +132,9 @@ async def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
 
-# ── Called once after app is initialized, before polling starts ──
 async def post_init(application):
     """Clear any existing webhook and pending updates from previous instance."""
-    await asyncio.sleep(5)  # ← រង់ចាំបន្ថែមមុន delete webhook
+    await asyncio.sleep(5)
     try:
         await application.bot.delete_webhook(drop_pending_updates=True)
         logger.info("✅ Webhook បានលុបចោល និង updates រង់ចាំត្រូវបានលុប")
@@ -131,15 +143,25 @@ async def post_init(application):
 
 
 def build_app():
+    from telegram.ext.filters import UpdateFilter
+    from telegram.ext._application import ApplicationHandlerStop
+
     app = (
         ApplicationBuilder()
         .token(TOKEN)
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
-        .post_init(post_init)   # ← clears old instance's polling lock
+        .post_init(post_init)
         .build()
     )
+
+    # ══════════════════════════════════════════
+    # 🛡️ ដាក់ Bot Blocker នៅ group=-1
+    # វារត់មុន handler ទាំងអស់ក្នុង group 0+
+    # ══════════════════════════════════════════
+    app.add_handler(TypeHandler(Update, block_bots), group=-1)
+    logger.info("🛡️ Bot blocker: បានដំឡើងរួចរាល់")
 
     fallbacks = [
         CommandHandler("cancel", cancel),
@@ -292,7 +314,7 @@ def build_app():
 async def run_bot():
     logger.info("🤖 កំពុងចាប់ផ្តើម bot...")
     logger.info("⏳ រង់ចាំ 30 វិនាទី ដើម្បីឱ្យ instance ចាស់បិទឱ្យស្រេច...")
-    await asyncio.sleep(30)  # ← កើនពី 20 → 30 វិនាទី
+    await asyncio.sleep(30)
 
     max_retries = 5
     app = None
@@ -301,20 +323,19 @@ async def run_bot():
         try:
             logger.info(f"🔄 ការព្យាយាមលើកទី {attempt + 1}/{max_retries}...")
             app = build_app()
-            await app.initialize()   # triggers post_init → delete_webhook
+            await app.initialize()
             await app.start()
             await app.updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True,
             )
             logger.info("✅ Bot កំពុង polling រួចរាល់")
-            await asyncio.Event().wait()  # run forever
-            break  # ← បើជោគជ័យ ចេញពី loop
+            await asyncio.Event().wait()
+            break
 
         except Exception as e:
             logger.warning(f"⚠️ ការព្យាយាមលើកទី {attempt + 1} បរាជ័យ: {e}")
 
-            # ព្យាយាម shutdown app បើវាត្រូវបានបង្កើតរួច
             if app is not None:
                 try:
                     await app.updater.stop()
@@ -331,7 +352,7 @@ async def run_bot():
                 app = None
 
             if attempt < max_retries - 1:
-                wait = (attempt + 1) * 15  # 15, 30, 45, 60 វិនាទី
+                wait = (attempt + 1) * 15
                 logger.info(f"⏳ រង់ចាំ {wait} វិនាទី មុននឹងព្យាយាមម្តងទៀត...")
                 await asyncio.sleep(wait)
             else:
