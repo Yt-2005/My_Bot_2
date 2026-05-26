@@ -122,6 +122,7 @@ async def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
 # ── Called once after app is initialized, before polling starts ──
 async def post_init(application):
     """Clear any existing webhook and pending updates from previous instance."""
+    await asyncio.sleep(5)  # ← រង់ចាំបន្ថែមមុន delete webhook
     try:
         await application.bot.delete_webhook(drop_pending_updates=True)
         logger.info("✅ Webhook បានលុបចោល និង updates រង់ចាំត្រូវបានលុប")
@@ -290,21 +291,52 @@ def build_app():
 
 async def run_bot():
     logger.info("🤖 កំពុងចាប់ផ្តើម bot...")
-    logger.info("⏳ រង់ចាំ 20 វិនាទី ដើម្បីឱ្យ instance ចាស់បិទឱ្យស្រេច...")
-    await asyncio.sleep(20)
+    logger.info("⏳ រង់ចាំ 30 វិនាទី ដើម្បីឱ្យ instance ចាស់បិទឱ្យស្រេច...")
+    await asyncio.sleep(30)  # ← កើនពី 20 → 30 វិនាទី
 
-    app = build_app()
-    await app.initialize()   # triggers post_init → delete_webhook
-    await app.start()
-    await app.updater.start_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
-    )
-    logger.info("✅ Bot កំពុង polling រួចរាល់")
-    await asyncio.Event().wait()  # run forever
-    await app.updater.stop()
-    await app.stop()
-    await app.shutdown()
+    max_retries = 5
+    app = None
+
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"🔄 ការព្យាយាមលើកទី {attempt + 1}/{max_retries}...")
+            app = build_app()
+            await app.initialize()   # triggers post_init → delete_webhook
+            await app.start()
+            await app.updater.start_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+            )
+            logger.info("✅ Bot កំពុង polling រួចរាល់")
+            await asyncio.Event().wait()  # run forever
+            break  # ← បើជោគជ័យ ចេញពី loop
+
+        except Exception as e:
+            logger.warning(f"⚠️ ការព្យាយាមលើកទី {attempt + 1} បរាជ័យ: {e}")
+
+            # ព្យាយាម shutdown app បើវាត្រូវបានបង្កើតរួច
+            if app is not None:
+                try:
+                    await app.updater.stop()
+                except Exception:
+                    pass
+                try:
+                    await app.stop()
+                except Exception:
+                    pass
+                try:
+                    await app.shutdown()
+                except Exception:
+                    pass
+                app = None
+
+            if attempt < max_retries - 1:
+                wait = (attempt + 1) * 15  # 15, 30, 45, 60 វិនាទី
+                logger.info(f"⏳ រង់ចាំ {wait} វិនាទី មុននឹងព្យាយាមម្តងទៀត...")
+                await asyncio.sleep(wait)
+            else:
+                logger.error("❌ បរាជ័យទាំងស្រុង បន្ទាប់ពីព្យាយាម 5 ដង!")
+                raise
 
 
 def main():
