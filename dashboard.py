@@ -450,7 +450,7 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
             <tbody>{user_rows}</tbody></table>
           </div>
         </div>"""
-        return render_template_string(BASE_HTML, content=content, logged_in=True, page="dashboard")
+        return render_template_string(BASE_HTML, content=Markup(content), logged_in=True, page="dashboard")
 
     # ── USERS ──
     @flask_app.route("/admin/users")
@@ -503,7 +503,7 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
             <tbody>{rows}</tbody>
           </table>
         </div>"""
-        return render_template_string(BASE_HTML, content=content, logged_in=True, page="users")
+        return render_template_string(BASE_HTML, content=Markup(content), logged_in=True, page="users")
 
     # ── BAN / UNBAN ──
     @flask_app.route("/admin/ban/<int:uid>")
@@ -589,7 +589,7 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
           <table><thead><tr><th>User ID</th><th>Username</th><th>Transactions</th><th>Total Spent</th></tr></thead>
           <tbody>{user_rows or "<tr><td colspan='4' style='color:var(--muted)'>No data</td></tr>"}</tbody></table>
         </div>"""
-        return render_template_string(BASE_HTML, content=content, logged_in=True, page="stats")
+        return render_template_string(BASE_HTML, content=Markup(content), logged_in=True, page="stats")
 
     # ── BROADCAST ──
     @flask_app.route("/admin/broadcast", methods=["GET", "POST"])
@@ -642,7 +642,7 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
             <button type="submit" class="btn btn-primary">📤 Send to All Users</button>
           </form>
         </div>"""
-        return render_template_string(BASE_HTML, content=content, logged_in=True, page="broadcast")
+        return render_template_string(BASE_HTML, content=Markup(content), logged_in=True, page="broadcast")
 
     # ── ERROR LOGS ──
     @flask_app.route("/admin/errors")
@@ -678,7 +678,7 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
             <tbody>{rows or "<tr><td colspan='5' style='color:var(--muted);text-align:center;padding:24px'>No errors logged</td></tr>"}</tbody>
           </table>
         </div>"""
-        return render_template_string(BASE_HTML, content=content, logged_in=True, page="errors")
+        return render_template_string(BASE_HTML, content=Markup(content), logged_in=True, page="errors")
 
     # ── API: Stats JSON ──
     @flask_app.route("/admin/api/stats")
@@ -697,5 +697,10 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
 
 
 def _table_exists(conn, name):
-    row = True  # PostgreSQL always has tables after init_db
-    return row is not None
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name=%s)", (name,))
+        row = cur.fetchone()
+        return bool(list(row.values())[0]) if row else False
+    except Exception:
+        return False is not None
