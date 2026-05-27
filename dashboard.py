@@ -1,3 +1,4 @@
+from markupsafe import Markup
 """
 dashboard.py — Admin Dashboard for Telegram Bot
 Accessible at /admin — password protected
@@ -321,7 +322,6 @@ tr:hover td { background: var(--surface2); }
 </html>"""
 
 def render_page(content, page="", logged_in=True):
-    from flask import Markup
     html = BASE_HTML.replace("{{ content }}", content)
     html = html.replace("{% if logged_in %}", "" if logged_in else "<!--")
     html = html.replace("{% endif %}", "" if logged_in else "-->")
@@ -367,7 +367,6 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
             </form>
           </div>
         </div>"""
-        from flask import Markup
         return render_template_string(BASE_HTML, content=Markup(content), logged_in=False, page="")
 
     # ── LOGOUT ──
