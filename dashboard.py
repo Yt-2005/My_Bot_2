@@ -39,12 +39,22 @@ def set_bot_app(app):
     global _bot_app
     _bot_app = app
 
-# ── DB ──
-DATABASE_URL = os.environ.get("SUPABASE_DB_URL", os.environ.get("DATABASE_URL", ""))
+# ── DB — reads all possible env var names (same as database.py) ──
+def _get_db_url():
+    return (
+        os.environ.get("SUPABASE_DB_URL") or
+        os.environ.get("DATABASE_URL") or
+        os.environ.get("POSTGRES_URL") or
+        os.environ.get("DB_URL") or
+        ""
+    )
 
 def db():
-    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
-    return conn
+    """Fresh connection — always reads env var at call time."""
+    url = _get_db_url()
+    if not url:
+        raise RuntimeError("❌ No DB URL! Set SUPABASE_DB_URL in Render environment.")
+    return psycopg.connect(url, row_factory=dict_row)
 
 # ── Auth ──
 DASHBOARD_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin1234")
@@ -1311,5 +1321,28 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
             conn.rollback()
             conn.close()
             return jsonify({"ok": False, "error": str(e)}), 500
+
+    # ── DB CHECK (debug) ──
+    @flask_app.route("/admin/dbcheck")
+    def admin_dbcheck():
+        url = _get_db_url()
+        url_display = (url[:50] + "...") if url else "❌ NOT SET"
+        try:
+            conn = db()
+            users = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+            tables = conn.execute("""
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = 'public' ORDER BY table_name
+            """).fetchall()
+            conn.close()
+            table_list = ", ".join(t["table_name"] for t in tables)
+            return (
+                f"<pre>DB URL: {url_display}\n"
+                f"Users:  {users}\n"
+                f"Tables: {table_list}\n"
+                f"Status: ✅ Connected</pre>"
+            )
+        except Exception as e:
+            return f"<pre>DB URL: {url_display}\nError: {e}</pre>", 500
 
     logger.info("✅ Admin dashboard registered at /admin")
