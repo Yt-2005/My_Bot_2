@@ -39,4 +39,26 @@ Flask==3.0.3
 python-dotenv==1.0.1
 
 # Async support
+asyncio-throttle==1.0.2# Telegram bot framework (with job-queue and webhooks)
+python-telegram-bot[job-queue,webhooks]==21.6
+
+# Groq AI SDK
+groq==1.2.0
+
+# HTTP client for async image generation
+aiohttp==3.10.11
+
+# Image processing for upscaler
+Pillow==10.4.0
+
+# Web server for Render health checks
+Flask==3.0.3
+
+# Environment variable loading
+python-dotenv==1.0.1
+
+# Async support
 asyncio-throttle==1.0.2
+
+# PostgreSQL driver — supports Python 3.14
+psycopg[binary]==3.2.9
