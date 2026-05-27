@@ -4,7 +4,7 @@ Accessible at /admin — password protected
 Features: Users, Expenses/Stats, Broadcast, Ban/Unban
 """
 
-import sqlite3
+# import sqlite3  # replaced by psycopg
 import logging
 from functools import wraps
 from datetime import datetime, timedelta
@@ -21,12 +21,15 @@ def set_bot_app(app):
     global _bot_app
     _bot_app = app
 
-# ── DB helper ──
-DB_PATH = "bot_data.db"
+# ── DB helper — Supabase PostgreSQL ──
+import os
+import psycopg
+from psycopg.rows import dict_row
+
+DATABASE_URL = os.environ.get("SUPABASE_DB_URL", os.environ.get("DATABASE_URL", ""))
 
 def db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
     return conn
 
 # ── Auth decorator ──
@@ -47,7 +50,7 @@ BASE_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Bot Admin</title>
-<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2%sfamily=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
 <style>
 :root {
   --bg: #0a0a0f;
@@ -510,7 +513,7 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
         if not _table_exists(conn, "banned_users"):
             conn.execute("CREATE TABLE IF NOT EXISTS banned_users (user_id INTEGER PRIMARY KEY)")
             conn.commit()
-        conn.execute("INSERT OR IGNORE INTO banned_users (user_id) VALUES (?)", (uid,))
+        conn.execute("INSERT OR IGNORE INTO banned_users (user_id) VALUES (%s)", (uid,))
         conn.commit()
         conn.close()
         return redirect("/admin/users")
@@ -519,7 +522,7 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
     @login_required
     def admin_unban(uid):
         conn = db()
-        conn.execute("DELETE FROM banned_users WHERE user_id=?", (uid,))
+        conn.execute("DELETE FROM banned_users WHERE user_id=%s", (uid,))
         conn.commit()
         conn.close()
         return redirect("/admin/users")
@@ -694,5 +697,5 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
 
 
 def _table_exists(conn, name):
-    row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
+    row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=%s", (name,)).fetchone()
     return row is not None
