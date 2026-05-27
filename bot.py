@@ -66,6 +66,128 @@ from handlers.admin_handler import (
     BROADCAST_MSG,
 )
 
+# ── NEW: Extra admin commands callable from Telegram ──
+from config import ADMIN_IDS as _ADMIN_IDS
+
+def _is_admin(user_id: int) -> bool:
+    return user_id in _ADMIN_IDS
+
+async def tg_userinfo(update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin: /userinfo <user_id>"""
+    if not _is_admin(update.effective_user.id):
+        return
+    from database import get_user_info
+    args = ctx.args
+    if not args:
+        await update.message.reply_text("Usage: /userinfo <user_id>")
+        return
+    try:
+        uid = int(args[0])
+        info = get_user_info(uid)
+        if not info:
+            await update.message.reply_text(f"❌ User {uid} not found.")
+            return
+        text = (
+            f"👤 *User Info*\n"
+            f"ID: `{info['user_id']}`\n"
+            f"Username: @{info['username'] or 'N/A'}\n"
+            f"Language: {info['language']}\n"
+            f"Budget: ${info['budget'] or 0:.2f}\n"
+            f"Reminder: {'ON' if info['daily_reminder'] else 'OFF'} {info['reminder_time'] or ''}\n"
+            f"Total Spent: ${info['total_spent']:.2f}\n"
+            f"Expenses: {info['expense_count']}\n"
+            f"Joined: {str(info['created_at'])[:10]}"
+        )
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def tg_ban(update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin: /ban <user_id>"""
+    if not _is_admin(update.effective_user.id):
+        return
+    from database import ban_user
+    args = ctx.args
+    if not args:
+        await update.message.reply_text("Usage: /ban <user_id>")
+        return
+    try:
+        uid = int(args[0])
+        ban_user(uid)
+        await update.message.reply_text(f"🚫 User `{uid}` has been banned.", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def tg_unban(update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin: /unban <user_id>"""
+    if not _is_admin(update.effective_user.id):
+        return
+    from database import unban_user
+    args = ctx.args
+    if not args:
+        await update.message.reply_text("Usage: /unban <user_id>")
+        return
+    try:
+        uid = int(args[0])
+        unban_user(uid)
+        await update.message.reply_text(f"✅ User `{uid}` has been unbanned.", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def tg_botstats(update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin: /botstats — full stats from PostgreSQL."""
+    if not _is_admin(update.effective_user.id):
+        return
+    from database import get_bot_stats
+    try:
+        s = get_bot_stats()
+        text = (
+            f"📊 *Bot Statistics*\n\n"
+            f"👥 Users: {s['total_users']} (+{s['new_today']} today)\n"
+            f"💰 Total Spent: ${s['total_spent']:.2f}\n"
+            f"📝 Notes: {s['total_notes']}\n"
+            f"⚠️ Errors: {s['errors']}\n"
+            f"🚫 Banned: {s['banned']}"
+        )
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def tg_sendmsg(update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin: /sendmsg <user_id> <message>"""
+    if not _is_admin(update.effective_user.id):
+        return
+    args = ctx.args
+    if not args or len(args) < 2:
+        await update.message.reply_text("Usage: /sendmsg <user_id> <message text>")
+        return
+    try:
+        uid = int(args[0])
+        msg = " ".join(args[1:])
+        await ctx.bot.send_message(chat_id=uid, text=f"📬 *Message from Admin:*\n\n{msg}", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Sent to `{uid}`", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def tg_deleteuser(update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin: /deleteuser <user_id>"""
+    if not _is_admin(update.effective_user.id):
+        return
+    args = ctx.args
+    if not args:
+        await update.message.reply_text("Usage: /deleteuser <user_id>")
+        return
+    try:
+        from database import get_conn
+        uid = int(args[0])
+        with get_conn() as conn:
+            c = conn.cursor()
+            for tbl in ["expenses", "notes", "chat_memory", "error_logs", "users"]:
+                c.execute(f"DELETE FROM {tbl} WHERE user_id=%s", (uid,))
+        await update.message.reply_text(f"🗑 User `{uid}` and all their data deleted.", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
 from flask import Flask, request as flask_request, jsonify
 from dashboard import register_dashboard
 
@@ -96,28 +218,21 @@ async def block_bots(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_reminders(ctx: ContextTypes.DEFAULT_TYPE):
-    import sqlite3
+    """✅ Fixed: uses PostgreSQL via database.py (no more sqlite3)."""
     from datetime import datetime
+    from database import send_reminders_db
     hour = datetime.now().strftime("%H")
     try:
-        conn = sqlite3.connect("bot_data.db")
-        c = conn.cursor()
-        c.execute(
-            "SELECT user_id FROM users WHERE daily_reminder=1 AND reminder_time LIKE ?",
-            (f"{hour}:%",)
-        )
-        rows = c.fetchall()
-        conn.close()
-        if rows:
-            for (uid,) in rows:
-                try:
-                    await ctx.bot.send_message(
-                        uid,
-                        "⏰ *Daily Reminder!*\n\nDon't forget to log your expenses today! 💰\n\nUse /add to record a new expense.",
-                        parse_mode="Markdown"
-                    )
-                except Exception as e:
-                    logger.warning(f"រំលឹកបរាជ័យ {uid}: {e}")
+        user_ids = send_reminders_db(hour)
+        for uid in user_ids:
+            try:
+                await ctx.bot.send_message(
+                    uid,
+                    "⏰ *Daily Reminder!*\n\nDon't forget to log your expenses today! 💰\n\nUse /add to record a new expense.",
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.warning(f"រំលឹកបរាជ័យ {uid}: {e}")
     except Exception as e:
         logger.error(f"កំហុស send_reminders: {e}")
 
@@ -276,6 +391,14 @@ def build_app():
     app.add_handler(CommandHandler("maintenance", maintenance_toggle))
     app.add_handler(CommandHandler("restart",     restart_info))
 
+    # ── New admin commands ──
+    app.add_handler(CommandHandler("botstats",   tg_botstats))
+    app.add_handler(CommandHandler("ban",        tg_ban))
+    app.add_handler(CommandHandler("unban",      tg_unban))
+    app.add_handler(CommandHandler("userinfo",   tg_userinfo))
+    app.add_handler(CommandHandler("sendmsg",    tg_sendmsg))
+    app.add_handler(CommandHandler("deleteuser", tg_deleteuser))
+
     app.add_handler(CallbackQueryHandler(image_style_callback,     pattern=r"^imgstyle\|"))
     app.add_handler(CallbackQueryHandler(reimagine_callback,       pattern=r"^reimagine\|"))
     app.add_handler(CallbackQueryHandler(upscale_pending_callback, pattern=r"^upscale_pending$"))
@@ -299,6 +422,8 @@ def create_flask_app(ptb_app):
 
     # ── Register admin dashboard ──
     try:
+        from dashboard import set_bot_app
+        set_bot_app(ptb_app)
         register_dashboard(flask_app, super_admin_ids=ADMIN_IDS)
         logger.info("✅ Admin dashboard registered at /admin")
     except Exception as e:

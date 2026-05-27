@@ -1,39 +1,53 @@
 """
-dashboard.py — Admin Dashboard for Telegram Bot
-Accessible at /admin — password protected
-Features: Users, Expenses/Stats, Broadcast, Ban/Unban
+dashboard.py — Admin Dashboard (Supabase PostgreSQL)
+Fixes:
+  ✅ strftime → to_char (PostgreSQL)
+  ✅ banned_users table auto-created in init_db (no more UndefinedTable)
+  ✅ send_reminders uses psycopg not sqlite3
+New:
+  ✅ Full CRUD: users, expenses, notes
+  ✅ /admin/expenses — browse, edit, delete any expense
+  ✅ /admin/user/<id> — detailed user profile
+  ✅ /admin/notes — view/delete notes
+  ✅ Telegram bot control via dashboard (send msg to user, ban via bot)
+  ✅ /admin/api/* JSON endpoints for Telegram bot commands
+  ✅ Export expenses as CSV
+  ✅ Search users & expenses
 """
 
-# import sqlite3  # replaced by psycopg
 import logging
+import os
+import csv
+import io
 from functools import wraps
 from datetime import datetime, timedelta
-from flask import Flask, render_template_string, request, session, redirect, url_for, jsonify
+
+import psycopg
+from psycopg.rows import dict_row
+from flask import (
+    Flask, render_template_string, request, session,
+    redirect, url_for, jsonify, Response
+)
 from markupsafe import Markup
-import threading
 
 logger = logging.getLogger(__name__)
 
-# ── Import bot's telegram app reference (set by bot.py) ──
+# ── Bot app reference (set by bot.py) ──
 _bot_app = None
 
 def set_bot_app(app):
     global _bot_app
     _bot_app = app
 
-# ── DB helper — Supabase PostgreSQL ──
-import os
-import psycopg
-from psycopg.rows import dict_row
-
+# ── DB ──
 DATABASE_URL = os.environ.get("SUPABASE_DB_URL", os.environ.get("DATABASE_URL", ""))
 
 def db():
     conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
     return conn
 
-# ── Auth decorator ──
-DASHBOARD_PASSWORD = "admin1234"  # Change this!
+# ── Auth ──
+DASHBOARD_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin1234")
 
 def login_required(f):
     @wraps(f)
@@ -43,250 +57,196 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated
 
-# ── HTML TEMPLATE ──
+# ─────────────────────────────────────────────────────────────────
+# HTML BASE TEMPLATE
+# ─────────────────────────────────────────────────────────────────
 BASE_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Bot Admin</title>
-<link href="https://fonts.googleapis.com/css2%sfamily=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<title>Bot Admin Panel</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=DM+Sans:wght@400;500;700;900&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #0a0a0f;
-  --surface: #12121a;
-  --surface2: #1a1a26;
-  --border: #2a2a3a;
-  --accent: #7c6aff;
-  --accent2: #ff6a8a;
-  --accent3: #6affb8;
-  --text: #e8e8f0;
-  --muted: #6b6b8a;
-  --danger: #ff4466;
-  --success: #44ff88;
-  --warning: #ffaa44;
+  --bg: #080b14;
+  --surface: #0d1117;
+  --surface2: #161b27;
+  --surface3: #1e2535;
+  --border: #232c3d;
+  --accent: #4f8ef7;
+  --accent2: #f74f8e;
+  --accent3: #4ff7a0;
+  --accent4: #f7c44f;
+  --text: #e2e8f5;
+  --muted: #5a6a8a;
+  --danger: #f74f6a;
+  --success: #4ff7a0;
+  --warning: #f7c44f;
+  --radius: 10px;
 }
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: 'Syne', sans-serif;
-  min-height: 100vh;
-  display: flex;
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;min-height:100vh;display:flex;}
+a{color:inherit;text-decoration:none;}
+code{font-family:'JetBrains Mono',monospace;}
+
+/* ── Sidebar ── */
+.sidebar{
+  width:220px;background:var(--surface);border-right:1px solid var(--border);
+  padding:20px 0;position:fixed;height:100vh;display:flex;flex-direction:column;z-index:100;
 }
-/* Sidebar */
-.sidebar {
-  width: 240px;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-  padding: 24px 0;
-  position: fixed;
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  z-index: 100;
+.sidebar-logo{padding:0 20px 20px;border-bottom:1px solid var(--border);margin-bottom:12px;}
+.sidebar-logo h1{font-size:17px;font-weight:900;letter-spacing:-0.5px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+.sidebar-logo p{font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px;}
+.nav-section{padding:8px 20px 4px;font-size:9px;font-weight:700;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.1em;font-family:'JetBrains Mono',monospace;}
+.nav-item{
+  display:flex;align-items:center;gap:10px;padding:10px 20px;color:var(--muted);
+  font-size:13px;font-weight:500;transition:all .15s;border-left:3px solid transparent;
 }
-.sidebar-logo {
-  padding: 0 24px 24px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 16px;
+.nav-item:hover,.nav-item.active{color:var(--text);background:var(--surface2);border-left-color:var(--accent);}
+.nav-item .ico{font-size:16px;width:20px;text-align:center;}
+.nav-bottom{margin-top:auto;padding:16px;}
+.nav-bottom a{
+  display:block;text-align:center;padding:9px;
+  background:rgba(247,79,106,.08);border:1px solid rgba(247,79,106,.2);
+  border-radius:var(--radius);color:var(--danger);font-size:12px;font-weight:700;transition:all .15s;
 }
-.sidebar-logo h1 {
-  font-size: 20px;
-  font-weight: 800;
-  background: linear-gradient(135deg, var(--accent), var(--accent2));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+.nav-bottom a:hover{background:rgba(247,79,106,.15);}
+
+/* ── Main ── */
+.main{margin-left:220px;flex:1;padding:28px 32px;min-height:100vh;}
+.page-title{font-size:26px;font-weight:900;letter-spacing:-0.5px;margin-bottom:4px;}
+.page-sub{color:var(--muted);font-size:11px;margin-bottom:28px;font-family:'JetBrains Mono',monospace;}
+
+/* ── Stat Cards ── */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:28px;}
+.card{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:18px;position:relative;overflow:hidden;transition:border-color .2s;
 }
-.sidebar-logo p { font-size: 11px; color: var(--muted); font-family: 'Space Mono', monospace; margin-top: 2px; }
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 24px;
-  color: var(--muted);
-  text-decoration: none;
-  font-size: 14px;
-  font-weight: 600;
-  transition: all 0.2s;
-  border-left: 3px solid transparent;
+.card:hover{border-color:var(--accent);}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;}
+.card.blue::before{background:linear-gradient(90deg,var(--accent),transparent);}
+.card.pink::before{background:linear-gradient(90deg,var(--accent2),transparent);}
+.card.green::before{background:linear-gradient(90deg,var(--accent3),transparent);}
+.card.yellow::before{background:linear-gradient(90deg,var(--accent4),transparent);}
+.card-ico{font-size:24px;margin-bottom:10px;}
+.card-val{font-size:30px;font-weight:900;letter-spacing:-1px;line-height:1;}
+.card-lbl{font-size:10px;color:var(--muted);margin-top:5px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;}
+
+/* ── Table ── */
+.table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:20px;}
+.table-header{
+  padding:14px 18px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
 }
-.nav-item:hover, .nav-item.active {
-  color: var(--text);
-  background: var(--surface2);
-  border-left-color: var(--accent);
+.table-header h3{font-size:14px;font-weight:700;}
+table{width:100%;border-collapse:collapse;}
+th{
+  padding:10px 14px;text-align:left;font-size:10px;font-weight:700;color:var(--muted);
+  background:var(--surface2);text-transform:uppercase;letter-spacing:.08em;
+  font-family:'JetBrains Mono',monospace;
 }
-.nav-item .icon { font-size: 18px; }
-.nav-logout {
-  margin-top: auto;
-  padding: 0 16px 16px;
+td{padding:10px 14px;font-size:12px;border-bottom:1px solid var(--border);}
+tr:last-child td{border-bottom:none;}
+tr:hover td{background:var(--surface2);}
+
+/* ── Badges ── */
+.badge{
+  display:inline-block;padding:2px 8px;border-radius:4px;
+  font-size:10px;font-weight:700;font-family:'JetBrains Mono',monospace;
 }
-.nav-logout a {
-  display: block;
-  text-align: center;
-  padding: 10px;
-  background: rgba(255,68,102,0.1);
-  border: 1px solid rgba(255,68,102,0.3);
-  border-radius: 8px;
-  color: var(--danger);
-  text-decoration: none;
-  font-size: 13px;
-  font-weight: 600;
-  transition: all 0.2s;
+.bg{background:rgba(79,142,247,.1);color:var(--accent);border:1px solid rgba(79,142,247,.2);}
+.br{background:rgba(247,79,106,.1);color:var(--danger);border:1px solid rgba(247,79,106,.2);}
+.bg3{background:rgba(79,247,160,.1);color:var(--accent3);border:1px solid rgba(79,247,160,.2);}
+.by{background:rgba(247,196,79,.1);color:var(--accent4);border:1px solid rgba(247,196,79,.2);}
+.bm{background:rgba(247,79,142,.1);color:var(--accent2);border:1px solid rgba(247,79,142,.2);}
+
+/* ── Buttons ── */
+.btn{
+  padding:7px 14px;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;
+  border:none;transition:all .15s;font-family:'DM Sans',sans-serif;display:inline-block;
 }
-.nav-logout a:hover { background: rgba(255,68,102,0.2); }
-/* Main */
-.main {
-  margin-left: 240px;
-  flex: 1;
-  padding: 32px;
-  min-height: 100vh;
+.btn-blue{background:var(--accent);color:#fff;}
+.btn-blue:hover{background:#3d7de8;transform:translateY(-1px);}
+.btn-red{background:rgba(247,79,106,.1);color:var(--danger);border:1px solid rgba(247,79,106,.25);}
+.btn-red:hover{background:rgba(247,79,106,.2);}
+.btn-green{background:rgba(79,247,160,.1);color:var(--accent3);border:1px solid rgba(79,247,160,.25);}
+.btn-green:hover{background:rgba(79,247,160,.2);}
+.btn-yellow{background:rgba(247,196,79,.1);color:var(--accent4);border:1px solid rgba(247,196,79,.25);}
+.btn-yellow:hover{background:rgba(247,196,79,.2);}
+.btn-sm{padding:4px 9px;font-size:10px;}
+.btn-xs{padding:3px 7px;font-size:10px;}
+
+/* ── Forms ── */
+.form-group{margin-bottom:14px;}
+.form-label{display:block;font-size:10px;font-weight:700;color:var(--muted);margin-bottom:5px;
+  text-transform:uppercase;letter-spacing:.06em;font-family:'JetBrains Mono',monospace;}
+.form-input,.form-select,.form-textarea{
+  width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:7px;
+  padding:9px 12px;color:var(--text);font-size:13px;font-family:'DM Sans',sans-serif;transition:border-color .2s;
 }
-.page-title {
-  font-size: 28px;
-  font-weight: 800;
-  margin-bottom: 8px;
+.form-input:focus,.form-select:focus,.form-textarea:focus{outline:none;border-color:var(--accent);}
+.form-select option{background:var(--surface2);}
+.form-textarea{resize:vertical;min-height:90px;}
+
+/* ── Alert ── */
+.alert{padding:11px 15px;border-radius:8px;margin-bottom:14px;font-size:12px;font-weight:500;}
+.alert-success{background:rgba(79,247,160,.08);border:1px solid rgba(79,247,160,.25);color:var(--accent3);}
+.alert-error{background:rgba(247,79,106,.08);border:1px solid rgba(247,79,106,.25);color:var(--danger);}
+.alert-info{background:rgba(79,142,247,.08);border:1px solid rgba(79,142,247,.25);color:var(--accent);}
+
+/* ── Login ── */
+.login-wrap{width:100%;height:100vh;display:flex;align-items:center;justify-content:center;}
+.login-box{width:360px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:36px;}
+.login-box h1{font-size:22px;font-weight:900;margin-bottom:4px;}
+.login-box p{color:var(--muted);font-size:12px;margin-bottom:24px;}
+
+/* ── Section / Grid ── */
+.section{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:20px;}
+.section h3{font-size:14px;font-weight:700;margin-bottom:14px;}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;}
+@media(max-width:900px){.grid-2,.grid-3{grid-template-columns:1fr;}}
+
+/* ── Search bar ── */
+.search-bar{display:flex;gap:8px;align-items:center;}
+.search-bar input{
+  background:var(--surface2);border:1px solid var(--border);border-radius:7px;
+  padding:7px 12px;color:var(--text);font-size:12px;font-family:'DM Sans',sans-serif;min-width:200px;
 }
-.page-sub { color: var(--muted); font-size: 13px; margin-bottom: 32px; font-family: 'Space Mono', monospace; }
-/* Cards */
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px; }
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 20px;
-  position: relative;
-  overflow: hidden;
+.search-bar input:focus{outline:none;border-color:var(--accent);}
+
+/* ── Modal ── */
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:500;
+  align-items:center;justify-content:center;}
+.modal-bg.open{display:flex;}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:14px;
+  padding:28px;width:460px;max-width:90vw;max-height:85vh;overflow-y:auto;}
+.modal h3{font-size:16px;font-weight:800;margin-bottom:16px;}
+.modal-close{float:right;background:none;border:none;color:var(--muted);
+  font-size:18px;cursor:pointer;margin-top:-4px;}
+
+/* ── Responsive ── */
+@media(max-width:768px){
+  .sidebar{width:54px;}
+  .sidebar-logo,.nav-item span,.nav-section{display:none;}
+  .nav-item{padding:14px;justify-content:center;}
+  .main{margin-left:54px;padding:14px;}
 }
-.card::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 2px;
+
+/* ── Misc ── */
+.text-muted{color:var(--muted);}
+.mono{font-family:'JetBrains Mono',monospace;font-size:11px;}
+.tag-chip{
+  display:inline-block;padding:2px 7px;background:var(--surface3);
+  border-radius:4px;font-size:10px;color:var(--muted);margin:1px;
 }
-.card.purple::before { background: linear-gradient(90deg, var(--accent), transparent); }
-.card.pink::before   { background: linear-gradient(90deg, var(--accent2), transparent); }
-.card.green::before  { background: linear-gradient(90deg, var(--accent3), transparent); }
-.card.orange::before { background: linear-gradient(90deg, var(--warning), transparent); }
-.card-icon { font-size: 28px; margin-bottom: 12px; }
-.card-value { font-size: 32px; font-weight: 800; line-height: 1; }
-.card-label { font-size: 12px; color: var(--muted); margin-top: 6px; font-family: 'Space Mono', monospace; }
-/* Table */
-.table-wrap {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  overflow: hidden;
-  margin-bottom: 24px;
-}
-.table-header {
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.table-header h3 { font-size: 15px; font-weight: 700; }
-table { width: 100%; border-collapse: collapse; }
-th {
-  padding: 12px 16px;
-  text-align: left;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--muted);
-  background: var(--surface2);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-family: 'Space Mono', monospace;
-}
-td {
-  padding: 12px 16px;
-  font-size: 13px;
-  border-bottom: 1px solid var(--border);
-}
-tr:last-child td { border-bottom: none; }
-tr:hover td { background: var(--surface2); }
-/* Badges */
-.badge {
-  display: inline-block;
-  padding: 3px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 700;
-  font-family: 'Space Mono', monospace;
-}
-.badge-green { background: rgba(68,255,136,0.1); color: var(--accent3); border: 1px solid rgba(68,255,136,0.2); }
-.badge-red   { background: rgba(255,68,102,0.1); color: var(--danger);  border: 1px solid rgba(255,68,102,0.2); }
-.badge-purple{ background: rgba(124,106,255,0.1); color: var(--accent); border: 1px solid rgba(124,106,255,0.2); }
-/* Buttons */
-.btn {
-  padding: 8px 16px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-  border: none;
-  transition: all 0.2s;
-  font-family: 'Syne', sans-serif;
-  text-decoration: none;
-  display: inline-block;
-}
-.btn-primary { background: var(--accent); color: white; }
-.btn-primary:hover { background: #6b5aee; transform: translateY(-1px); }
-.btn-danger  { background: rgba(255,68,102,0.15); color: var(--danger); border: 1px solid rgba(255,68,102,0.3); }
-.btn-danger:hover { background: rgba(255,68,102,0.25); }
-.btn-success { background: rgba(68,255,136,0.15); color: var(--accent3); border: 1px solid rgba(68,255,136,0.3); }
-.btn-success:hover { background: rgba(68,255,136,0.25); }
-.btn-sm { padding: 5px 10px; font-size: 11px; }
-/* Forms */
-.form-group { margin-bottom: 16px; }
-.form-label { display: block; font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em; font-family: 'Space Mono', monospace; }
-.form-input, .form-textarea {
-  width: 100%;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 14px;
-  color: var(--text);
-  font-size: 14px;
-  font-family: 'Syne', sans-serif;
-  transition: border-color 0.2s;
-}
-.form-input:focus, .form-textarea:focus { outline: none; border-color: var(--accent); }
-.form-textarea { resize: vertical; min-height: 100px; }
-/* Alert */
-.alert { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
-.alert-success { background: rgba(68,255,136,0.1); border: 1px solid rgba(68,255,136,0.3); color: var(--accent3); }
-.alert-error   { background: rgba(255,68,102,0.1); border: 1px solid rgba(255,68,102,0.3); color: var(--danger); }
-/* Login page */
-.login-wrap {
-  width: 100%;
-  height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg);
-}
-.login-box {
-  width: 380px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 40px;
-}
-.login-box h1 { font-size: 24px; font-weight: 800; margin-bottom: 4px; }
-.login-box p  { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
-/* Responsive */
-@media(max-width:768px) {
-  .sidebar { width: 60px; }
-  .sidebar-logo, .nav-item span { display: none; }
-  .nav-item { padding: 16px; justify-content: center; }
-  .main { margin-left: 60px; padding: 16px; }
-}
-.section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 24px; }
-.section h3 { font-size: 16px; font-weight: 700; margin-bottom: 16px; }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-@media(max-width:900px) { .grid-2 { grid-template-columns: 1fr; } }
+.user-id{color:var(--accent);font-family:'JetBrains Mono',monospace;font-size:11px;}
+.divider{border:none;border-top:1px solid var(--border);margin:16px 0;}
 </style>
 </head>
 <body>
@@ -294,24 +254,36 @@ tr:hover td { background: var(--surface2); }
 <div class="sidebar">
   <div class="sidebar-logo">
     <h1>🤖 BotAdmin</h1>
-    <p>CONTROL PANEL</p>
+    <p>CONTROL PANEL v2</p>
   </div>
+  <div class="nav-section">Overview</div>
   <a href="/admin" class="nav-item {% if page=='dashboard' %}active{% endif %}">
-    <span class="icon">📊</span><span>Dashboard</span>
+    <span class="ico">📊</span><span>Dashboard</span>
   </a>
+  <div class="nav-section">Data</div>
   <a href="/admin/users" class="nav-item {% if page=='users' %}active{% endif %}">
-    <span class="icon">👥</span><span>Users</span>
+    <span class="ico">👥</span><span>Users</span>
+  </a>
+  <a href="/admin/expenses" class="nav-item {% if page=='expenses' %}active{% endif %}">
+    <span class="ico">💰</span><span>Expenses</span>
+  </a>
+  <a href="/admin/notes" class="nav-item {% if page=='notes' %}active{% endif %}">
+    <span class="ico">📝</span><span>Notes</span>
   </a>
   <a href="/admin/stats" class="nav-item {% if page=='stats' %}active{% endif %}">
-    <span class="icon">💰</span><span>Expenses</span>
+    <span class="ico">📈</span><span>Stats</span>
   </a>
+  <div class="nav-section">Tools</div>
   <a href="/admin/broadcast" class="nav-item {% if page=='broadcast' %}active{% endif %}">
-    <span class="icon">📢</span><span>Broadcast</span>
+    <span class="ico">📢</span><span>Broadcast</span>
+  </a>
+  <a href="/admin/bot_control" class="nav-item {% if page=='bot_control' %}active{% endif %}">
+    <span class="ico">🤖</span><span>Bot Control</span>
   </a>
   <a href="/admin/errors" class="nav-item {% if page=='errors' %}active{% endif %}">
-    <span class="icon">⚠️</span><span>Error Logs</span>
+    <span class="ico">⚠️</span><span>Error Logs</span>
   </a>
-  <div class="nav-logout">
+  <div class="nav-bottom">
     <a href="/admin/logout">🚪 Logout</a>
   </div>
 </div>
@@ -324,29 +296,61 @@ tr:hover td { background: var(--surface2); }
 </body>
 </html>"""
 
+
 def render_page(content, page="", logged_in=True):
-    html = BASE_HTML.replace("{{ content }}", content)
-    html = html.replace("{% if logged_in %}", "" if logged_in else "<!--")
-    html = html.replace("{% endif %}", "" if logged_in else "-->")
-    html = html.replace("{% if page=='dashboard' %}", "")
-    for p in ["dashboard","users","stats","broadcast","errors"]:
-        html = html.replace(f"{{% if page=='{p}' %}}", "")
-        html = html.replace(f"active{{% endif %}}", f"{'active' if page==p else ''}")
-    # Simple template replacement
-    return html
+    return render_template_string(BASE_HTML, content=Markup(content), logged_in=logged_in, page=page)
 
 
-# ────────────────────────────────────────────────────────────────
-# ROUTES
-# ────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────────────────
 
-def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", password: str = "admin1234", super_admin_ids=None):
+def _safe_query(conn, sql, params=None):
+    """Execute a query safely, return rows or []."""
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, params or ())
+        return cur.fetchall()
+    except Exception as e:
+        logger.warning(f"Query error: {e}")
+        return []
+
+def _safe_one(conn, sql, params=None):
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, params or ())
+        return cur.fetchone()
+    except Exception as e:
+        logger.warning(f"Query error: {e}")
+        return None
+
+def _send_tg(text_or_coro):
+    """Run async telegram call from sync context."""
+    import asyncio
+    if _bot_app is None:
+        return False
+    try:
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(text_or_coro)
+        loop.close()
+        return True
+    except Exception as e:
+        logger.warning(f"TG send error: {e}")
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────
+# REGISTER ALL ROUTES
+# ─────────────────────────────────────────────────────────────────
+
+def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
+                       password: str = "admin1234", super_admin_ids=None):
     super_admin_ids = list(super_admin_ids or [])
-    flask_app.secret_key = secret_key
+    flask_app.secret_key = os.environ.get("SECRET_KEY", secret_key)
     global DASHBOARD_PASSWORD
-    DASHBOARD_PASSWORD = password
+    DASHBOARD_PASSWORD = os.environ.get("ADMIN_PASSWORD", password)
 
-    # ── LOGIN ──
+    # ── LOGIN ──────────────────────────────────────────────────────
     @flask_app.route("/admin/login", methods=["GET", "POST"])
     def admin_login():
         error = ""
@@ -354,353 +358,958 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
             if request.form.get("password") == DASHBOARD_PASSWORD:
                 session["logged_in"] = True
                 return redirect("/admin")
-            error = "Wrong password!"
+            error = "❌ Wrong password!"
         content = f"""
         <div class="login-wrap">
           <div class="login-box">
             <h1>🤖 Bot Admin</h1>
-            <p>Enter admin password to continue</p>
-            {'<div class="alert alert-error">' + error + '</div>' if error else ''}
+            <p>Enter your admin password to continue</p>
+            {'<div class="alert alert-error">'+error+'</div>' if error else ''}
             <form method="POST">
               <div class="form-group">
                 <label class="form-label">Password</label>
                 <input type="password" name="password" class="form-input" placeholder="••••••••" autofocus>
               </div>
-              <button type="submit" class="btn btn-primary" style="width:100%">Login →</button>
+              <button type="submit" class="btn btn-blue" style="width:100%;margin-top:4px">Login →</button>
             </form>
           </div>
         </div>"""
-        return render_template_string(BASE_HTML, content=Markup(content), logged_in=False, page="")
+        return render_page(content, logged_in=False)
 
-    # ── LOGOUT ──
     @flask_app.route("/admin/logout")
     def admin_logout():
         session.clear()
         return redirect("/admin/login")
 
-    # ── DASHBOARD HOME ──
+    # ── DASHBOARD HOME ─────────────────────────────────────────────
     @flask_app.route("/admin")
     @login_required
     def admin_home():
         conn = db()
-        total_users    = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()['c']
-        total_expenses = conn.execute("SELECT COALESCE(SUM(amount),0) AS c FROM expenses").fetchone()['c']
-        total_notes    = conn.execute("SELECT COUNT(*) AS c FROM notes").fetchone()['c']
-        total_errors   = conn.execute("SELECT COUNT(*) AS c FROM error_logs").fetchone()['c']
-        new_today      = conn.execute("SELECT COUNT(*) AS c FROM users WHERE created_at::date = CURRENT_DATE").fetchone()['c']
-        top_categories = conn.execute("""
-            SELECT category, SUM(amount) as total
-            FROM expenses GROUP BY category
-            ORDER BY total DESC LIMIT 5
-        """).fetchall()
-        recent_users = conn.execute("""
-            SELECT user_id, username, language, created_at FROM users
-            ORDER BY created_at DESC LIMIT 5
-        """).fetchall()
+        total_users    = (_safe_one(conn, "SELECT COUNT(*) AS c FROM users") or {}).get('c', 0)
+        total_expenses = (_safe_one(conn, "SELECT COALESCE(SUM(amount),0) AS c FROM expenses") or {}).get('c', 0)
+        total_notes    = (_safe_one(conn, "SELECT COUNT(*) AS c FROM notes") or {}).get('c', 0)
+        total_errors   = (_safe_one(conn, "SELECT COUNT(*) AS c FROM error_logs") or {}).get('c', 0)
+        new_today      = (_safe_one(conn, "SELECT COUNT(*) AS c FROM users WHERE created_at::date = CURRENT_DATE") or {}).get('c', 0)
+        expense_today  = (_safe_one(conn, "SELECT COALESCE(SUM(amount),0) AS c FROM expenses WHERE date = CURRENT_DATE") or {}).get('c', 0)
+
+        top_cats  = _safe_query(conn, "SELECT category, SUM(amount) as total FROM expenses GROUP BY category ORDER BY total DESC LIMIT 6")
+        recent_users = _safe_query(conn, "SELECT user_id, username, language, created_at FROM users ORDER BY created_at DESC LIMIT 8")
+        recent_expenses = _safe_query(conn, """
+            SELECT e.id, e.user_id, u.username, e.category, e.amount, e.note, e.date
+            FROM expenses e LEFT JOIN users u ON e.user_id=u.user_id
+            ORDER BY e.created_at DESC LIMIT 8
+        """)
         conn.close()
 
         cat_rows = "".join(f"""
             <tr>
               <td>{r['category'] or 'N/A'}</td>
-              <td><span class="badge badge-purple">${r['total']:.2f}</span></td>
-            </tr>""" for r in top_categories) or "<tr><td colspan='2' style='color:var(--muted)'>No data</td></tr>"
+              <td><span class="badge bg">${r['total']:.2f}</span></td>
+            </tr>""" for r in top_cats) or "<tr><td colspan='2' class='text-muted'>No data</td></tr>"
 
         user_rows = "".join(f"""
             <tr>
-              <td><code style='color:var(--accent);font-size:11px'>{r['user_id']}</code></td>
+              <td><a href="/admin/user/{r['user_id']}" class="user-id">{r['user_id']}</a></td>
               <td>{r['username'] or '—'}</td>
-              <td><span class="badge badge-{'green' if r['language']=='km' else 'purple'}">{r['language']}</span></td>
-              <td style='color:var(--muted);font-size:11px'>{r['created_at'][:10]}</td>
+              <td><span class="badge bg3">{r['language'].upper()}</span></td>
+              <td class="text-muted mono">{str(r['created_at'])[:10]}</td>
             </tr>""" for r in recent_users)
+
+        exp_rows = "".join(f"""
+            <tr>
+              <td><a href="/admin/user/{r['user_id']}" class="user-id">{r['user_id']}</a></td>
+              <td>{r['username'] or '—'}</td>
+              <td><span class="badge by">{r['category'] or '?'}</span></td>
+              <td><span class="badge bg">${r['amount']:.2f}</span></td>
+              <td class="text-muted" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{r['note'] or '—'}</td>
+              <td class="text-muted mono">{str(r['date'])[:10]}</td>
+              <td><a href="/admin/expense/delete/{r['id']}" class="btn btn-red btn-xs" onclick="return confirm('Delete?')">🗑</a></td>
+            </tr>""" for r in recent_expenses)
 
         content = f"""
         <div class="page-title">Dashboard</div>
-        <div class="page-sub">OVERVIEW // {datetime.now().strftime('%Y-%m-%d %H:%M')}</div>
+        <div class="page-sub">OVERVIEW // {datetime.now().strftime('%Y-%m-%d %H:%M')} // Bot: {'🟢 ONLINE' if _bot_app else '🔴 OFFLINE'}</div>
         <div class="cards">
-          <div class="card purple">
-            <div class="card-icon">👥</div>
-            <div class="card-value">{total_users}</div>
-            <div class="card-label">TOTAL USERS (+{new_today} today)</div>
+          <div class="card blue">
+            <div class="card-ico">👥</div>
+            <div class="card-val">{total_users}</div>
+            <div class="card-lbl">Total Users (+{new_today} today)</div>
           </div>
           <div class="card pink">
-            <div class="card-icon">💰</div>
-            <div class="card-value">${total_expenses:.0f}</div>
-            <div class="card-label">TOTAL EXPENSES</div>
+            <div class="card-ico">💰</div>
+            <div class="card-val">${float(total_expenses):.0f}</div>
+            <div class="card-lbl">All-Time Expenses (${float(expense_today):.0f} today)</div>
           </div>
           <div class="card green">
-            <div class="card-icon">📝</div>
-            <div class="card-value">{total_notes}</div>
-            <div class="card-label">TOTAL NOTES</div>
+            <div class="card-ico">📝</div>
+            <div class="card-val">{total_notes}</div>
+            <div class="card-lbl">Total Notes</div>
           </div>
-          <div class="card orange">
-            <div class="card-icon">⚠️</div>
-            <div class="card-value">{total_errors}</div>
-            <div class="card-label">ERROR LOGS</div>
+          <div class="card yellow">
+            <div class="card-ico">⚠️</div>
+            <div class="card-val">{total_errors}</div>
+            <div class="card-lbl">Error Logs</div>
           </div>
         </div>
         <div class="grid-2">
           <div class="table-wrap">
-            <div class="table-header"><h3>🏆 Top Expense Categories</h3></div>
+            <div class="table-header"><h3>🏆 Top Categories</h3></div>
             <table><thead><tr><th>Category</th><th>Total</th></tr></thead>
             <tbody>{cat_rows}</tbody></table>
           </div>
           <div class="table-wrap">
-            <div class="table-header"><h3>🆕 Recent Users</h3></div>
+            <div class="table-header">
+              <h3>🆕 Recent Users</h3>
+              <a href="/admin/users" class="btn btn-blue btn-sm">View All</a>
+            </div>
             <table><thead><tr><th>ID</th><th>Username</th><th>Lang</th><th>Joined</th></tr></thead>
             <tbody>{user_rows}</tbody></table>
           </div>
-        </div>"""
-        return render_template_string(BASE_HTML, content=Markup(content), logged_in=True, page="dashboard")
+        </div>
+        <div class="table-wrap">
+          <div class="table-header">
+            <h3>💸 Recent Expenses</h3>
+            <a href="/admin/expenses" class="btn btn-blue btn-sm">View All</a>
+          </div>
+          <table><thead><tr><th>User ID</th><th>Username</th><th>Category</th><th>Amount</th><th>Note</th><th>Date</th><th></th></tr></thead>
+          <tbody>{exp_rows or "<tr><td colspan='7' class='text-muted' style='text-align:center;padding:20px'>No expenses yet</td></tr>"}</tbody>
+        </table></div>"""
 
-    # ── USERS ──
+        return render_page(content, page="dashboard")
+
+    # ── USERS LIST ─────────────────────────────────────────────────
     @flask_app.route("/admin/users")
     @login_required
     def admin_users():
         conn = db()
-        users = conn.execute("""
-            SELECT u.user_id, u.username, u.language, u.pin,
-                   u.daily_reminder, u.created_at,
-                   COUNT(DISTINCT e.id) as expense_count,
-                   COUNT(DISTINCT n.id) as note_count
-            FROM users u
-            LEFT JOIN expenses e ON u.user_id = e.user_id
-            LEFT JOIN notes n ON u.user_id = n.user_id
-            GROUP BY u.user_id
-            ORDER BY u.created_at DESC
-        """).fetchall()
-        banned = conn.execute("SELECT user_id FROM banned_users").fetchall() if _table_exists(conn, "banned_users") else []
-        banned_ids = {r[0] for r in banned}
+        q = request.args.get("q", "").strip()
+        if q:
+            users = _safe_query(conn, """
+                SELECT u.user_id, u.username, u.language, u.daily_reminder, u.budget, u.created_at,
+                       COUNT(DISTINCT e.id) as expense_count, COUNT(DISTINCT n.id) as note_count
+                FROM users u
+                LEFT JOIN expenses e ON u.user_id=e.user_id
+                LEFT JOIN notes n ON u.user_id=n.user_id
+                WHERE u.username ILIKE %s OR u.user_id::text = %s
+                GROUP BY u.user_id ORDER BY u.created_at DESC
+            """, (f"%{q}%", q))
+        else:
+            users = _safe_query(conn, """
+                SELECT u.user_id, u.username, u.language, u.daily_reminder, u.budget, u.created_at,
+                       COUNT(DISTINCT e.id) as expense_count, COUNT(DISTINCT n.id) as note_count
+                FROM users u
+                LEFT JOIN expenses e ON u.user_id=e.user_id
+                LEFT JOIN notes n ON u.user_id=n.user_id
+                GROUP BY u.user_id ORDER BY u.created_at DESC
+            """)
+
+        # Get banned users safely
+        try:
+            banned_rows = _safe_query(conn, "SELECT user_id FROM banned_users")
+            banned_ids = {r['user_id'] for r in banned_rows}
+        except Exception:
+            banned_ids = set()
         conn.close()
+
+        msg = request.args.get("msg", "")
+        alert = f'<div class="alert alert-success">{msg}</div>' if msg else ""
 
         rows = "".join(f"""
             <tr>
-              <td><code style='color:var(--accent);font-size:11px'>{u['user_id']}</code></td>
+              <td><a href="/admin/user/{u['user_id']}" class="user-id">{u['user_id']}</a></td>
               <td>{u['username'] or '—'}</td>
-              <td><span class="badge badge-{'green' if u['language']=='km' else 'purple'}">{u['language'].upper()}</span></td>
+              <td><span class="badge bg3">{(u['language'] or 'km').upper()}</span></td>
               <td style='text-align:center'>{u['expense_count']}</td>
               <td style='text-align:center'>{u['note_count']}</td>
-              <td><span class="badge badge-{'green' if not u['daily_reminder'] else 'purple'}">{'ON' if u['daily_reminder'] else 'OFF'}</span></td>
-              <td style='color:var(--muted);font-size:11px'>{u['created_at'][:10]}</td>
-              <td>
-                {'<a href="/admin/unban/'+str(u["user_id"])+'" class="btn btn-success btn-sm">Unban</a>' if u['user_id'] in banned_ids else '<a href="/admin/ban/'+str(u["user_id"])+'" class="btn btn-danger btn-sm">Ban</a>'}
+              <td><span class="badge {'bg3' if u['daily_reminder'] else 'br'}">{'ON' if u['daily_reminder'] else 'OFF'}</span></td>
+              <td class="text-muted mono">{str(u['created_at'])[:10]}</td>
+              <td style='display:flex;gap:4px;flex-wrap:wrap;padding:8px 14px'>
+                <a href="/admin/user/{u['user_id']}" class="btn btn-blue btn-xs">👁</a>
+                {'<a href="/admin/unban/'+str(u["user_id"])+'" class="btn btn-green btn-xs">✅ Unban</a>' if u['user_id'] in banned_ids else '<a href="/admin/ban/'+str(u["user_id"])+'" class="btn btn-red btn-xs">🚫 Ban</a>'}
+                <a href="/admin/delete_user/{u['user_id']}" class="btn btn-red btn-xs" onclick="return confirm('Delete user {u['user_id']} and ALL their data?')">🗑</a>
               </td>
             </tr>""" for u in users)
 
         content = f"""
+        {alert}
         <div class="page-title">Users</div>
         <div class="page-sub">TOTAL: {len(users)} USERS</div>
         <div class="table-wrap">
           <div class="table-header">
             <h3>👥 All Users</h3>
-            <span style='color:var(--muted);font-size:12px'>{len(users)} total</span>
+            <form method="GET" class="search-bar">
+              <input name="q" value="{q}" placeholder="Search user ID or username...">
+              <button type="submit" class="btn btn-blue btn-sm">Search</button>
+              {'<a href="/admin/users" class="btn btn-sm" style="background:var(--surface3);color:var(--muted)">Clear</a>' if q else ''}
+            </form>
           </div>
           <table>
             <thead><tr>
               <th>User ID</th><th>Username</th><th>Lang</th>
               <th>Expenses</th><th>Notes</th><th>Reminder</th>
-              <th>Joined</th><th>Action</th>
+              <th>Joined</th><th>Actions</th>
             </tr></thead>
-            <tbody>{rows}</tbody>
+            <tbody>{rows or "<tr><td colspan='8' class='text-muted' style='text-align:center;padding:20px'>No users found</td></tr>"}</tbody>
           </table>
         </div>"""
-        return render_template_string(BASE_HTML, content=Markup(content), logged_in=True, page="users")
+        return render_page(content, page="users")
 
-    # ── BAN / UNBAN ──
+    # ── USER DETAIL ────────────────────────────────────────────────
+    @flask_app.route("/admin/user/<int:uid>")
+    @login_required
+    def admin_user_detail(uid):
+        conn = db()
+        user = _safe_one(conn, "SELECT * FROM users WHERE user_id=%s", (uid,))
+        if not user:
+            conn.close()
+            return redirect("/admin/users")
+
+        expenses = _safe_query(conn, """
+            SELECT id, category, amount, note, tag, date FROM expenses
+            WHERE user_id=%s ORDER BY date DESC LIMIT 30
+        """, (uid,))
+        notes = _safe_query(conn, "SELECT id, content, created_at FROM notes WHERE user_id=%s ORDER BY created_at DESC LIMIT 20", (uid,))
+        total_spent = (_safe_one(conn, "SELECT COALESCE(SUM(amount),0) AS t FROM expenses WHERE user_id=%s", (uid,)) or {}).get('t', 0)
+        conn.close()
+
+        msg = request.args.get("msg", "")
+        alert = f'<div class="alert alert-success">{msg}</div>' if msg else ""
+
+        exp_rows = "".join(f"""
+            <tr>
+              <td><span class="badge by">{e['category'] or '?'}</span></td>
+              <td><span class="badge bg">${e['amount']:.2f}</span></td>
+              <td class="text-muted" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{e['note'] or '—'}</td>
+              <td>{('<span class="tag-chip">'+e['tag']+'</span>') if e['tag'] else '—'}</td>
+              <td class="text-muted mono">{str(e['date'])[:10]}</td>
+              <td><a href="/admin/expense/delete/{e['id']}" class="btn btn-red btn-xs" onclick="return confirm('Delete?')">🗑</a></td>
+            </tr>""" for e in expenses)
+
+        note_rows = "".join(f"""
+            <tr>
+              <td style="max-width:400px">{n['content']}</td>
+              <td class="text-muted mono">{str(n['created_at'])[:16]}</td>
+              <td><a href="/admin/note/delete/{n['id']}?uid={uid}" class="btn btn-red btn-xs" onclick="return confirm('Delete note?')">🗑</a></td>
+            </tr>""" for n in notes)
+
+        content = f"""
+        {alert}
+        <div style="display:flex;align-items:center;gap:16px;margin-bottom:4px">
+          <a href="/admin/users" class="btn btn-sm" style="background:var(--surface2);color:var(--muted)">← Back</a>
+          <div class="page-title">User {uid}</div>
+        </div>
+        <div class="page-sub">@{user['username'] or 'no username'} // Joined {str(user['created_at'])[:10]}</div>
+
+        <div class="grid-3" style="margin-bottom:20px">
+          <div class="card blue"><div class="card-ico">💰</div><div class="card-val">${float(total_spent):.0f}</div><div class="card-lbl">Total Spent</div></div>
+          <div class="card green"><div class="card-ico">🧾</div><div class="card-val">{len(expenses)}</div><div class="card-lbl">Expenses (last 30)</div></div>
+          <div class="card yellow"><div class="card-ico">📝</div><div class="card-val">{len(notes)}</div><div class="card-lbl">Notes</div></div>
+        </div>
+
+        <div class="grid-2">
+          <div class="section">
+            <h3>📋 User Info</h3>
+            <table style="width:100%">
+              <tr><td class="text-muted mono" style="padding:6px 0;width:120px">user_id</td><td><span class="user-id">{user['user_id']}</span></td></tr>
+              <tr><td class="text-muted mono" style="padding:6px 0">username</td><td>@{user['username'] or '—'}</td></tr>
+              <tr><td class="text-muted mono" style="padding:6px 0">language</td><td><span class="badge bg3">{(user['language'] or 'km').upper()}</span></td></tr>
+              <tr><td class="text-muted mono" style="padding:6px 0">budget</td><td>${user['budget'] or 0:.2f}</td></tr>
+              <tr><td class="text-muted mono" style="padding:6px 0">reminder</td><td><span class="badge {'bg3' if user['daily_reminder'] else 'br'}">{'ON' if user['daily_reminder'] else 'OFF'}</span> {user['reminder_time'] or ''}</td></tr>
+              <tr><td class="text-muted mono" style="padding:6px 0">pin set</td><td>{'✅ Yes' if user['pin'] else '❌ No'}</td></tr>
+            </table>
+          </div>
+          <div class="section">
+            <h3>📨 Send Telegram Message</h3>
+            <form method="POST" action="/admin/user/{uid}/send">
+              <div class="form-group">
+                <label class="form-label">Message to user</label>
+                <textarea name="message" class="form-textarea" placeholder="Type message to send via Telegram..."></textarea>
+              </div>
+              <button type="submit" class="btn btn-blue">📤 Send via Telegram</button>
+            </form>
+            <hr class="divider">
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <a href="/admin/ban/{uid}?from=user" class="btn btn-red btn-sm">🚫 Ban User</a>
+              <a href="/admin/unban/{uid}?from=user" class="btn btn-green btn-sm">✅ Unban</a>
+              <a href="/admin/delete_user/{uid}" class="btn btn-red btn-sm" onclick="return confirm('Delete user and ALL data?')">🗑 Delete User</a>
+            </div>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <div class="table-header">
+            <h3>💸 Expenses</h3>
+            <a href="/admin/expenses?uid={uid}" class="btn btn-blue btn-sm">View All</a>
+          </div>
+          <table><thead><tr><th>Category</th><th>Amount</th><th>Note</th><th>Tag</th><th>Date</th><th></th></tr></thead>
+          <tbody>{exp_rows or "<tr><td colspan='6' class='text-muted' style='text-align:center;padding:16px'>No expenses</td></tr>"}</tbody></table>
+        </div>
+
+        <div class="table-wrap">
+          <div class="table-header"><h3>📝 Notes</h3></div>
+          <table><thead><tr><th>Content</th><th>Created</th><th></th></tr></thead>
+          <tbody>{note_rows or "<tr><td colspan='3' class='text-muted' style='text-align:center;padding:16px'>No notes</td></tr>"}</tbody></table>
+        </div>"""
+        return render_page(content, page="users")
+
+    # ── SEND MSG TO USER ───────────────────────────────────────────
+    @flask_app.route("/admin/user/<int:uid>/send", methods=["POST"])
+    @login_required
+    def admin_send_message(uid):
+        message = request.form.get("message", "").strip()
+        if message and _bot_app:
+            import asyncio
+            async def _send():
+                await _bot_app.bot.send_message(
+                    chat_id=uid,
+                    text=f"📬 *Message from Admin:*\n\n{message}",
+                    parse_mode="Markdown"
+                )
+            try:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(_send())
+                loop.close()
+                return redirect(f"/admin/user/{uid}?msg=✅ Message sent!")
+            except Exception as e:
+                return redirect(f"/admin/user/{uid}?msg=❌ Failed: {e}")
+        return redirect(f"/admin/user/{uid}?msg=❌ Bot not connected or empty message")
+
+    # ── DELETE USER ────────────────────────────────────────────────
+    @flask_app.route("/admin/delete_user/<int:uid>")
+    @login_required
+    def admin_delete_user(uid):
+        conn = db()
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM expenses WHERE user_id=%s", (uid,))
+            cur.execute("DELETE FROM notes WHERE user_id=%s", (uid,))
+            cur.execute("DELETE FROM chat_memory WHERE user_id=%s", (uid,))
+            cur.execute("DELETE FROM error_logs WHERE user_id=%s", (uid,))
+            cur.execute("DELETE FROM users WHERE user_id=%s", (uid,))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Delete user error: {e}")
+        finally:
+            conn.close()
+        return redirect("/admin/users?msg=✅ User deleted")
+
+    # ── BAN / UNBAN ────────────────────────────────────────────────
     @flask_app.route("/admin/ban/<int:uid>")
     @login_required
     def admin_ban(uid):
         conn = db()
-        if not _table_exists(conn, "banned_users"):
-            conn.execute("CREATE TABLE IF NOT EXISTS banned_users (user_id INTEGER PRIMARY KEY)")
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS banned_users (
+                    user_id BIGINT PRIMARY KEY,
+                    banned_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            cur.execute("INSERT INTO banned_users (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (uid,))
             conn.commit()
-        conn.execute("INSERT OR IGNORE INTO banned_users (user_id) VALUES (%s)", (uid,))
-        conn.commit()
-        conn.close()
-        return redirect("/admin/users")
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Ban error: {e}")
+        finally:
+            conn.close()
+        back = request.args.get("from", "")
+        return redirect(f"/admin/user/{uid}" if back == "user" else "/admin/users")
 
     @flask_app.route("/admin/unban/<int:uid>")
     @login_required
     def admin_unban(uid):
         conn = db()
-        conn.execute("DELETE FROM banned_users WHERE user_id=%s", (uid,))
-        conn.commit()
-        conn.close()
-        return redirect("/admin/users")
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM banned_users WHERE user_id=%s", (uid,))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+        finally:
+            conn.close()
+        back = request.args.get("from", "")
+        return redirect(f"/admin/user/{uid}" if back == "user" else "/admin/users")
 
-    # ── STATS ──
+    # ── EXPENSES LIST (CRUD) ────────────────────────────────────────
+    @flask_app.route("/admin/expenses")
+    @login_required
+    def admin_expenses():
+        conn = db()
+        uid_filter = request.args.get("uid", "").strip()
+        cat_filter = request.args.get("cat", "").strip()
+        q = request.args.get("q", "").strip()
+        page_num = int(request.args.get("page", 1))
+        per_page = 50
+        offset = (page_num - 1) * per_page
+
+        where = "WHERE 1=1"
+        params = []
+        if uid_filter:
+            where += " AND e.user_id=%s"; params.append(uid_filter)
+        if cat_filter:
+            where += " AND e.category ILIKE %s"; params.append(f"%{cat_filter}%")
+        if q:
+            where += " AND (e.note ILIKE %s OR e.tag ILIKE %s)"; params += [f"%{q}%", f"%{q}%"]
+
+        expenses = _safe_query(conn, f"""
+            SELECT e.id, e.user_id, u.username, e.category, e.amount, e.note, e.tag, e.date
+            FROM expenses e LEFT JOIN users u ON e.user_id=u.user_id
+            {where} ORDER BY e.date DESC, e.id DESC LIMIT %s OFFSET %s
+        """, params + [per_page, offset])
+
+        total_count = (_safe_one(conn, f"SELECT COUNT(*) AS c FROM expenses e {where}", params) or {}).get('c', 0)
+        categories = _safe_query(conn, "SELECT DISTINCT category FROM expenses ORDER BY category")
+        conn.close()
+
+        msg = request.args.get("msg", "")
+        alert = f'<div class="alert alert-success">{msg}</div>' if msg else ""
+
+        cat_opts = "".join(f'<option value="{c["category"]}" {"selected" if cat_filter==c["category"] else ""}>{c["category"]}</option>' for c in categories)
+
+        rows = "".join(f"""
+            <tr>
+              <td class="mono" style="color:var(--muted)">{e['id']}</td>
+              <td><a href="/admin/user/{e['user_id']}" class="user-id">{e['user_id']}</a></td>
+              <td>{e['username'] or '—'}</td>
+              <td><span class="badge by">{e['category'] or '?'}</span></td>
+              <td><span class="badge bg">${e['amount']:.2f}</span></td>
+              <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{e['note'] or '—'}</td>
+              <td>{('<span class="tag-chip">'+e['tag']+'</span>') if e['tag'] else '—'}</td>
+              <td class="text-muted mono">{str(e['date'])[:10]}</td>
+              <td style="display:flex;gap:4px">
+                <a href="/admin/expense/edit/{e['id']}" class="btn btn-yellow btn-xs">✏️</a>
+                <a href="/admin/expense/delete/{e['id']}" class="btn btn-red btn-xs" onclick="return confirm('Delete expense #{e['id']}?')">🗑</a>
+              </td>
+            </tr>""" for e in expenses)
+
+        total_pages = (total_count + per_page - 1) // per_page
+        pagination = ""
+        if total_pages > 1:
+            pagination = '<div style="display:flex;gap:6px;margin-top:12px;justify-content:center">'
+            for p in range(1, total_pages + 1):
+                active_style = "background:var(--accent);color:#fff;" if p == page_num else "background:var(--surface2);color:var(--muted);"
+                pagination += f'<a href="?page={p}&uid={uid_filter}&cat={cat_filter}&q={q}" class="btn btn-xs" style="{active_style}">{p}</a>'
+            pagination += '</div>'
+
+        content = f"""
+        {alert}
+        <div class="page-title">Expenses</div>
+        <div class="page-sub">{total_count} TOTAL RECORDS</div>
+
+        <div class="section" style="margin-bottom:20px">
+          <form method="GET" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+            <div><label class="form-label">User ID</label><input name="uid" value="{uid_filter}" class="form-input" style="width:130px" placeholder="User ID"></div>
+            <div><label class="form-label">Category</label>
+              <select name="cat" class="form-select" style="width:140px">
+                <option value="">All Categories</option>{cat_opts}
+              </select>
+            </div>
+            <div><label class="form-label">Note / Tag</label><input name="q" value="{q}" class="form-input" style="width:160px" placeholder="Search..."></div>
+            <button type="submit" class="btn btn-blue">Filter</button>
+            <a href="/admin/expenses" class="btn" style="background:var(--surface2);color:var(--muted)">Clear</a>
+            <a href="/admin/expenses/export?uid={uid_filter}&cat={cat_filter}&q={q}" class="btn btn-green">⬇️ Export CSV</a>
+          </form>
+        </div>
+
+        <div class="table-wrap">
+          <div class="table-header">
+            <h3>💸 Expenses</h3>
+            <span class="text-muted mono">Page {page_num}/{total_pages or 1}</span>
+          </div>
+          <table><thead><tr><th>#</th><th>User ID</th><th>Username</th><th>Category</th><th>Amount</th><th>Note</th><th>Tag</th><th>Date</th><th>Actions</th></tr></thead>
+          <tbody>{rows or "<tr><td colspan='9' class='text-muted' style='text-align:center;padding:20px'>No expenses found</td></tr>"}</tbody></table>
+        </div>
+        {pagination}"""
+        return render_page(content, page="expenses")
+
+    # ── EDIT EXPENSE ───────────────────────────────────────────────
+    @flask_app.route("/admin/expense/edit/<int:eid>", methods=["GET", "POST"])
+    @login_required
+    def admin_expense_edit(eid):
+        conn = db()
+        if request.method == "POST":
+            try:
+                cur = conn.cursor()
+                cur.execute("""
+                    UPDATE expenses SET category=%s, amount=%s, note=%s, tag=%s, date=%s
+                    WHERE id=%s
+                """, (
+                    request.form.get("category"),
+                    float(request.form.get("amount", 0)),
+                    request.form.get("note"),
+                    request.form.get("tag"),
+                    request.form.get("date"),
+                    eid
+                ))
+                conn.commit()
+                conn.close()
+                return redirect(f"/admin/expenses?msg=✅ Expense #{eid} updated")
+            except Exception as e:
+                conn.rollback()
+                conn.close()
+                return redirect(f"/admin/expense/edit/{eid}?msg=❌ Error: {e}")
+
+        expense = _safe_one(conn, "SELECT * FROM expenses WHERE id=%s", (eid,))
+        conn.close()
+        if not expense:
+            return redirect("/admin/expenses")
+
+        msg = request.args.get("msg", "")
+        alert = f'<div class="alert alert-error">{msg}</div>' if msg else ""
+
+        content = f"""
+        {alert}
+        <div style="display:flex;align-items:center;gap:16px;margin-bottom:4px">
+          <a href="/admin/expenses" class="btn btn-sm" style="background:var(--surface2);color:var(--muted)">← Back</a>
+          <div class="page-title">Edit Expense #{eid}</div>
+        </div>
+        <div class="page-sub">User {expense['user_id']}</div>
+        <div class="section" style="max-width:500px">
+          <form method="POST">
+            <div class="form-group"><label class="form-label">Category</label>
+              <input name="category" value="{expense['category'] or ''}" class="form-input"></div>
+            <div class="form-group"><label class="form-label">Amount ($)</label>
+              <input name="amount" type="number" step="0.01" value="{expense['amount']}" class="form-input"></div>
+            <div class="form-group"><label class="form-label">Note</label>
+              <input name="note" value="{expense['note'] or ''}" class="form-input"></div>
+            <div class="form-group"><label class="form-label">Tag</label>
+              <input name="tag" value="{expense['tag'] or ''}" class="form-input"></div>
+            <div class="form-group"><label class="form-label">Date</label>
+              <input name="date" type="date" value="{str(expense['date'])[:10]}" class="form-input"></div>
+            <button type="submit" class="btn btn-blue">💾 Save Changes</button>
+          </form>
+        </div>"""
+        return render_page(content, page="expenses")
+
+    # ── DELETE EXPENSE ─────────────────────────────────────────────
+    @flask_app.route("/admin/expense/delete/<int:eid>")
+    @login_required
+    def admin_expense_delete(eid):
+        conn = db()
+        uid = None
+        try:
+            row = _safe_one(conn, "SELECT user_id FROM expenses WHERE id=%s", (eid,))
+            uid = row['user_id'] if row else None
+            cur = conn.cursor()
+            cur.execute("DELETE FROM expenses WHERE id=%s", (eid,))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+        finally:
+            conn.close()
+        back = request.referrer or "/admin/expenses"
+        if uid and f"/admin/user/{uid}" in back:
+            return redirect(f"/admin/user/{uid}?msg=✅ Expense deleted")
+        return redirect("/admin/expenses?msg=✅ Expense deleted")
+
+    # ── EXPORT CSV ─────────────────────────────────────────────────
+    @flask_app.route("/admin/expenses/export")
+    @login_required
+    def admin_expenses_export():
+        conn = db()
+        uid_filter = request.args.get("uid", "").strip()
+        cat_filter = request.args.get("cat", "").strip()
+        q = request.args.get("q", "").strip()
+
+        where = "WHERE 1=1"
+        params = []
+        if uid_filter:
+            where += " AND e.user_id=%s"; params.append(uid_filter)
+        if cat_filter:
+            where += " AND e.category ILIKE %s"; params.append(f"%{cat_filter}%")
+        if q:
+            where += " AND (e.note ILIKE %s OR e.tag ILIKE %s)"; params += [f"%{q}%", f"%{q}%"]
+
+        expenses = _safe_query(conn, f"""
+            SELECT e.id, e.user_id, u.username, e.category, e.amount, e.note, e.tag, e.date
+            FROM expenses e LEFT JOIN users u ON e.user_id=u.user_id
+            {where} ORDER BY e.date DESC
+        """, params)
+        conn.close()
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["id", "user_id", "username", "category", "amount", "note", "tag", "date"])
+        for e in expenses:
+            writer.writerow([e['id'], e['user_id'], e['username'], e['category'],
+                             e['amount'], e['note'], e['tag'], str(e['date'])[:10]])
+
+        return Response(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f"attachment;filename=expenses_{datetime.now().strftime('%Y%m%d')}.csv"}
+        )
+
+    # ── NOTES ──────────────────────────────────────────────────────
+    @flask_app.route("/admin/notes")
+    @login_required
+    def admin_notes():
+        conn = db()
+        notes = _safe_query(conn, """
+            SELECT n.id, n.user_id, u.username, n.content, n.created_at
+            FROM notes n LEFT JOIN users u ON n.user_id=u.user_id
+            ORDER BY n.created_at DESC LIMIT 100
+        """)
+        conn.close()
+
+        msg = request.args.get("msg", "")
+        alert = f'<div class="alert alert-success">{msg}</div>' if msg else ""
+
+        rows = "".join(f"""
+            <tr>
+              <td><a href="/admin/user/{n['user_id']}" class="user-id">{n['user_id']}</a></td>
+              <td>{n['username'] or '—'}</td>
+              <td style="max-width:400px">{n['content']}</td>
+              <td class="text-muted mono">{str(n['created_at'])[:16]}</td>
+              <td><a href="/admin/note/delete/{n['id']}" class="btn btn-red btn-xs" onclick="return confirm('Delete?')">🗑</a></td>
+            </tr>""" for n in notes)
+
+        content = f"""
+        {alert}
+        <div class="page-title">Notes</div>
+        <div class="page-sub">{len(notes)} NOTES (LAST 100)</div>
+        <div class="table-wrap">
+          <div class="table-header"><h3>📝 All Notes</h3></div>
+          <table><thead><tr><th>User ID</th><th>Username</th><th>Content</th><th>Created</th><th></th></tr></thead>
+          <tbody>{rows or "<tr><td colspan='5' class='text-muted' style='text-align:center;padding:20px'>No notes</td></tr>"}</tbody>
+        </table></div>"""
+        return render_page(content, page="notes")
+
+    @flask_app.route("/admin/note/delete/<int:nid>")
+    @login_required
+    def admin_note_delete(nid):
+        conn = db()
+        uid = request.args.get("uid")
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM notes WHERE id=%s", (nid,))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+        finally:
+            conn.close()
+        if uid:
+            return redirect(f"/admin/user/{uid}?msg=✅ Note deleted")
+        return redirect("/admin/notes?msg=✅ Note deleted")
+
+    # ── STATS ──────────────────────────────────────────────────────
     @flask_app.route("/admin/stats")
     @login_required
     def admin_stats():
         conn = db()
-        by_cat = conn.execute("""
+        by_cat = _safe_query(conn, """
             SELECT category, COUNT(*) as cnt, SUM(amount) as total
             FROM expenses GROUP BY category ORDER BY total DESC
-        """).fetchall()
-        by_month = conn.execute("""
-            SELECT strftime('%Y-%m', date) as month, SUM(amount) as total, COUNT(*) as cnt
+        """)
+        # ✅ FIXED: to_char instead of strftime
+        by_month = _safe_query(conn, """
+            SELECT to_char(date, 'YYYY-MM') as month, SUM(amount) as total, COUNT(*) as cnt
             FROM expenses GROUP BY month ORDER BY month DESC LIMIT 12
-        """).fetchall()
-        top_users = conn.execute("""
+        """)
+        top_users = _safe_query(conn, """
             SELECT e.user_id, u.username, SUM(e.amount) as total, COUNT(*) as cnt
             FROM expenses e LEFT JOIN users u ON e.user_id=u.user_id
-            GROUP BY e.user_id ORDER BY total DESC LIMIT 10
-        """).fetchall()
+            GROUP BY e.user_id, u.username ORDER BY total DESC LIMIT 10
+        """)
         conn.close()
 
         cat_rows = "".join(f"""
             <tr>
               <td>{r['category'] or 'N/A'}</td>
               <td style='text-align:center'>{r['cnt']}</td>
-              <td><span class="badge badge-purple">${r['total']:.2f}</span></td>
+              <td><span class="badge bg">${r['total']:.2f}</span></td>
             </tr>""" for r in by_cat)
 
         month_rows = "".join(f"""
             <tr>
-              <td><span class="badge badge-green">{r['month']}</span></td>
+              <td><span class="badge bg3">{r['month']}</span></td>
               <td style='text-align:center'>{r['cnt']}</td>
-              <td><span class="badge badge-purple">${r['total']:.2f}</span></td>
+              <td><span class="badge bg">${r['total']:.2f}</span></td>
             </tr>""" for r in by_month)
 
         user_rows = "".join(f"""
             <tr>
-              <td><code style='color:var(--accent);font-size:11px'>{r['user_id']}</code></td>
+              <td><a href="/admin/user/{r['user_id']}" class="user-id">{r['user_id']}</a></td>
               <td>{r['username'] or '—'}</td>
               <td style='text-align:center'>{r['cnt']}</td>
-              <td><span class="badge badge-pink">${r['total']:.2f}</span></td>
+              <td><span class="badge bm">${r['total']:.2f}</span></td>
             </tr>""" for r in top_users)
 
         content = f"""
-        <div class="page-title">Expenses & Stats</div>
+        <div class="page-title">Stats & Analytics</div>
         <div class="page-sub">FINANCIAL OVERVIEW</div>
         <div class="grid-2">
           <div class="table-wrap">
             <div class="table-header"><h3>📁 By Category</h3></div>
             <table><thead><tr><th>Category</th><th>Count</th><th>Total</th></tr></thead>
-            <tbody>{cat_rows or "<tr><td colspan='3' style='color:var(--muted)'>No data</td></tr>"}</tbody></table>
+            <tbody>{cat_rows or "<tr><td colspan='3' class='text-muted'>No data</td></tr>"}</tbody></table>
           </div>
           <div class="table-wrap">
             <div class="table-header"><h3>📅 By Month</h3></div>
             <table><thead><tr><th>Month</th><th>Count</th><th>Total</th></tr></thead>
-            <tbody>{month_rows or "<tr><td colspan='3' style='color:var(--muted)'>No data</td></tr>"}</tbody></table>
+            <tbody>{month_rows or "<tr><td colspan='3' class='text-muted'>No data</td></tr>"}</tbody></table>
           </div>
         </div>
         <div class="table-wrap">
           <div class="table-header"><h3>🏆 Top Spenders</h3></div>
           <table><thead><tr><th>User ID</th><th>Username</th><th>Transactions</th><th>Total Spent</th></tr></thead>
-          <tbody>{user_rows or "<tr><td colspan='4' style='color:var(--muted)'>No data</td></tr>"}</tbody></table>
+          <tbody>{user_rows or "<tr><td colspan='4' class='text-muted'>No data</td></tr>"}</tbody></table>
         </div>"""
-        return render_template_string(BASE_HTML, content=Markup(content), logged_in=True, page="stats")
+        return render_page(content, page="stats")
 
-    # ── BROADCAST ──
+    # ── BROADCAST ──────────────────────────────────────────────────
     @flask_app.route("/admin/broadcast", methods=["GET", "POST"])
     @login_required
     def admin_broadcast():
         result = ""
         if request.method == "POST":
             message = request.form.get("message", "").strip()
+            target = request.form.get("target", "all")
             if message and _bot_app:
                 conn = db()
-                user_ids = [r[0] for r in conn.execute("SELECT user_id FROM users").fetchall()]
+                if target == "active":
+                    rows = _safe_query(conn, """
+                        SELECT DISTINCT user_id FROM expenses
+                        WHERE date >= CURRENT_DATE - INTERVAL '30 days'
+                    """)
+                else:
+                    rows = _safe_query(conn, "SELECT user_id FROM users")
                 conn.close()
-                sent = 0
-                failed = 0
+                user_ids = [r['user_id'] for r in rows]
+
                 import asyncio
+                sent = failed = 0
                 async def do_broadcast():
                     nonlocal sent, failed
                     for uid in user_ids:
                         try:
-                            await _bot_app.bot.send_message(chat_id=uid, text=f"📢 *Admin Announcement*\n\n{message}", parse_mode="Markdown")
+                            await _bot_app.bot.send_message(
+                                chat_id=uid,
+                                text=f"📢 *Admin Announcement*\n\n{message}",
+                                parse_mode="Markdown"
+                            )
                             sent += 1
                         except Exception:
                             failed += 1
                 try:
-                    loop = asyncio.new_event_loop()
-                    loop.run_until_complete(do_broadcast())
-                    loop.close()
+                    lp = asyncio.new_event_loop()
+                    lp.run_until_complete(do_broadcast())
+                    lp.close()
                     result = f'<div class="alert alert-success">✅ Sent to {sent} users ({failed} failed)</div>'
                 except Exception as e:
                     result = f'<div class="alert alert-error">❌ Error: {e}</div>'
             elif not _bot_app:
-                result = '<div class="alert alert-error">❌ Bot not connected to dashboard yet</div>'
+                result = '<div class="alert alert-error">❌ Bot not connected to dashboard</div>'
 
         conn = db()
-        user_count = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()['c']
+        user_count = (_safe_one(conn, "SELECT COUNT(*) AS c FROM users") or {}).get('c', 0)
+        active_count = (_safe_one(conn, """
+            SELECT COUNT(DISTINCT user_id) AS c FROM expenses
+            WHERE date >= CURRENT_DATE - INTERVAL '30 days'
+        """) or {}).get('c', 0)
         conn.close()
 
         content = f"""
         <div class="page-title">Broadcast</div>
-        <div class="page-sub">SEND MESSAGE TO ALL USERS</div>
+        <div class="page-sub">SEND MESSAGE TO USERS</div>
         {result}
         <div class="section">
-          <h3>📢 Send Broadcast Message</h3>
-          <p style='color:var(--muted);font-size:13px;margin-bottom:16px'>Will be sent to all <strong style='color:var(--accent)'>{user_count}</strong> users</p>
+          <h3>📢 Send Broadcast</h3>
           <form method="POST">
             <div class="form-group">
-              <label class="form-label">Message</label>
-              <textarea name="message" class="form-textarea" placeholder="Type your announcement here..."></textarea>
+              <label class="form-label">Target Audience</label>
+              <select name="target" class="form-select" style="width:240px">
+                <option value="all">All Users ({user_count})</option>
+                <option value="active">Active last 30 days ({active_count})</option>
+              </select>
             </div>
-            <button type="submit" class="btn btn-primary">📤 Send to All Users</button>
+            <div class="form-group">
+              <label class="form-label">Message (Markdown supported)</label>
+              <textarea name="message" class="form-textarea" placeholder="*Bold*, _italic_, type your announcement..."></textarea>
+            </div>
+            <button type="submit" class="btn btn-blue">📤 Send Broadcast</button>
           </form>
         </div>"""
-        return render_template_string(BASE_HTML, content=Markup(content), logged_in=True, page="broadcast")
+        return render_page(content, page="broadcast")
 
-    # ── ERROR LOGS ──
+    # ── BOT CONTROL ────────────────────────────────────────────────
+    @flask_app.route("/admin/bot_control", methods=["GET", "POST"])
+    @login_required
+    def admin_bot_control():
+        result = ""
+        if request.method == "POST":
+            action = request.form.get("action")
+            uid = request.form.get("uid", "").strip()
+            msg = request.form.get("msg", "").strip()
+
+            if action == "send" and uid and msg and _bot_app:
+                import asyncio
+                async def _s():
+                    await _bot_app.bot.send_message(chat_id=int(uid), text=f"📬 *Admin:* {msg}", parse_mode="Markdown")
+                try:
+                    lp = asyncio.new_event_loop(); lp.run_until_complete(_s()); lp.close()
+                    result = f'<div class="alert alert-success">✅ Sent to {uid}</div>'
+                except Exception as e:
+                    result = f'<div class="alert alert-error">❌ {e}</div>'
+
+            elif action == "ban" and uid:
+                conn = db()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("CREATE TABLE IF NOT EXISTS banned_users (user_id BIGINT PRIMARY KEY, banned_at TIMESTAMPTZ DEFAULT NOW())")
+                    cur.execute("INSERT INTO banned_users (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (int(uid),))
+                    conn.commit()
+                    result = f'<div class="alert alert-success">🚫 User {uid} banned</div>'
+                except Exception as e:
+                    conn.rollback()
+                    result = f'<div class="alert alert-error">❌ {e}</div>'
+                finally:
+                    conn.close()
+
+            elif action == "unban" and uid:
+                conn = db()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("DELETE FROM banned_users WHERE user_id=%s", (int(uid),))
+                    conn.commit()
+                    result = f'<div class="alert alert-success">✅ User {uid} unbanned</div>'
+                except Exception as e:
+                    conn.rollback()
+                    result = f'<div class="alert alert-error">❌ {e}</div>'
+                finally:
+                    conn.close()
+
+        bot_status = "🟢 ONLINE" if _bot_app else "🔴 OFFLINE"
+        content = f"""
+        <div class="page-title">Bot Control</div>
+        <div class="page-sub">BOT STATUS: {bot_status}</div>
+        {result}
+        <div class="grid-2">
+          <div class="section">
+            <h3>📨 Send Message to User</h3>
+            <form method="POST">
+              <input type="hidden" name="action" value="send">
+              <div class="form-group"><label class="form-label">User ID</label>
+                <input name="uid" class="form-input" placeholder="123456789"></div>
+              <div class="form-group"><label class="form-label">Message</label>
+                <textarea name="msg" class="form-textarea" placeholder="Your message..."></textarea></div>
+              <button type="submit" class="btn btn-blue">📤 Send</button>
+            </form>
+          </div>
+          <div class="section">
+            <h3>🚫 Ban / Unban User</h3>
+            <form method="POST" style="margin-bottom:16px">
+              <input type="hidden" name="action" value="ban">
+              <div class="form-group"><label class="form-label">User ID to Ban</label>
+                <input name="uid" class="form-input" placeholder="123456789"></div>
+              <button type="submit" class="btn btn-red">🚫 Ban User</button>
+            </form>
+            <hr class="divider">
+            <form method="POST">
+              <input type="hidden" name="action" value="unban">
+              <div class="form-group"><label class="form-label">User ID to Unban</label>
+                <input name="uid" class="form-input" placeholder="123456789"></div>
+              <button type="submit" class="btn btn-green">✅ Unban User</button>
+            </form>
+          </div>
+        </div>
+        <div class="section">
+          <h3>📋 Telegram Bot Commands Reference</h3>
+          <p style="color:var(--muted);font-size:12px;margin-bottom:12px">These commands work via Telegram bot for admins:</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px">
+            {''.join(f'<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px"><code style="color:var(--accent);font-size:12px">{cmd}</code><p style="color:var(--muted);font-size:11px;margin-top:4px">{desc}</p></div>' for cmd, desc in [
+                ("/stats", "Show bot statistics"),
+                ("/broadcast <msg>", "Send message to all users"),
+                ("/ban <user_id>", "Ban a user"),
+                ("/unban <user_id>", "Unban a user"),
+                ("/userinfo <user_id>", "Get user details"),
+                ("/deleteuser <user_id>", "Delete user and all data"),
+                ("/errorlogs", "View recent errors"),
+                ("/maintenance", "Toggle maintenance mode"),
+            ])}
+          </div>
+        </div>"""
+        return render_page(content, page="bot_control")
+
+    # ── ERROR LOGS ─────────────────────────────────────────────────
     @flask_app.route("/admin/errors")
     @login_required
     def admin_errors():
         conn = db()
-        errors = conn.execute("""
-            SELECT e.*, u.username FROM error_logs e
-            LEFT JOIN users u ON e.user_id=u.user_id
-            ORDER BY e.created_at DESC LIMIT 50
-        """).fetchall()
+        errors = _safe_query(conn, """
+            SELECT e.id, e.user_id, u.username, e.error, e.context, e.created_at
+            FROM error_logs e LEFT JOIN users u ON e.user_id=u.user_id
+            ORDER BY e.created_at DESC LIMIT 100
+        """)
         conn.close()
 
         rows = "".join(f"""
             <tr>
-              <td><code style='color:var(--accent);font-size:11px'>{e['user_id']}</code></td>
-              <td style='font-size:11px;color:var(--muted)'>{e['username'] or '—'}</td>
-              <td style='font-size:12px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>{e['error']}</td>
-              <td><span class="badge badge-purple">{e['context'] or '—'}</span></td>
-              <td style='color:var(--muted);font-size:11px'>{e['created_at'][:16]}</td>
+              <td><a href="/admin/user/{e['user_id']}" class="user-id">{e['user_id']}</a></td>
+              <td>{e['username'] or '—'}</td>
+              <td style='font-size:11px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>{e['error']}</td>
+              <td><span class="badge bg">{e['context'] or '—'}</span></td>
+              <td class="text-muted mono">{str(e['created_at'])[:16]}</td>
             </tr>""" for e in errors)
 
         content = f"""
         <div class="page-title">Error Logs</div>
-        <div class="page-sub">LAST 50 ERRORS</div>
+        <div class="page-sub">LAST 100 ERRORS</div>
         <div class="table-wrap">
           <div class="table-header">
             <h3>⚠️ Recent Errors</h3>
-            <span style='color:var(--muted);font-size:12px'>{len(errors)} entries</span>
+            <span class="text-muted mono">{len(errors)} entries</span>
           </div>
-          <table>
-            <thead><tr><th>User ID</th><th>Username</th><th>Error</th><th>Context</th><th>Time</th></tr></thead>
-            <tbody>{rows or "<tr><td colspan='5' style='color:var(--muted);text-align:center;padding:24px'>No errors logged</td></tr>"}</tbody>
-          </table>
-        </div>"""
-        return render_template_string(BASE_HTML, content=Markup(content), logged_in=True, page="errors")
+          <table><thead><tr><th>User ID</th><th>Username</th><th>Error</th><th>Context</th><th>Time</th></tr></thead>
+          <tbody>{rows or "<tr><td colspan='5' class='text-muted' style='text-align:center;padding:24px'>No errors logged 🎉</td></tr>"}</tbody>
+        </table></div>"""
+        return render_page(content, page="errors")
 
-    # ── API: Stats JSON ──
+    # ── JSON API (for Telegram bot commands) ──────────────────────
     @flask_app.route("/admin/api/stats")
     @login_required
     def api_stats():
         conn = db()
         data = {
-            "users": conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()['c'],
-            "expenses": conn.execute("SELECT COALESCE(SUM(amount),0) AS c FROM expenses").fetchone()['c'],
-            "notes": conn.execute("SELECT COUNT(*) AS c FROM notes").fetchone()['c'],
+            "users": (_safe_one(conn, "SELECT COUNT(*) AS c FROM users") or {}).get('c', 0),
+            "expenses_total": float((_safe_one(conn, "SELECT COALESCE(SUM(amount),0) AS c FROM expenses") or {}).get('c', 0)),
+            "notes": (_safe_one(conn, "SELECT COUNT(*) AS c FROM notes") or {}).get('c', 0),
+            "errors": (_safe_one(conn, "SELECT COUNT(*) AS c FROM error_logs") or {}).get('c', 0),
+            "new_today": (_safe_one(conn, "SELECT COUNT(*) AS c FROM users WHERE created_at::date=CURRENT_DATE") or {}).get('c', 0),
         }
         conn.close()
         return jsonify(data)
 
+    @flask_app.route("/admin/api/user/<int:uid>")
+    @login_required
+    def api_user(uid):
+        conn = db()
+        user = _safe_one(conn, "SELECT user_id,username,language,budget,daily_reminder,created_at FROM users WHERE user_id=%s", (uid,))
+        if not user:
+            conn.close()
+            return jsonify({"error": "User not found"}), 404
+        spent = (_safe_one(conn, "SELECT COALESCE(SUM(amount),0) AS t FROM expenses WHERE user_id=%s", (uid,)) or {}).get('t', 0)
+        user['total_spent'] = float(spent)
+        conn.close()
+        return jsonify(dict(user))
+
+    @flask_app.route("/admin/api/ban/<int:uid>", methods=["POST"])
+    @login_required
+    def api_ban(uid):
+        conn = db()
+        try:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS banned_users (user_id BIGINT PRIMARY KEY, banned_at TIMESTAMPTZ DEFAULT NOW())")
+            cur.execute("INSERT INTO banned_users (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (uid,))
+            conn.commit()
+            conn.close()
+            return jsonify({"ok": True, "action": "banned", "user_id": uid})
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            return jsonify({"ok": False, "error": str(e)}), 500
+
     logger.info("✅ Admin dashboard registered at /admin")
-
-
-def _table_exists(conn, name):
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name=%s)", (name,))
-        row = cur.fetchone()
-        return bool(list(row.values())[0]) if row else False
-    except Exception:
-        return False is not None

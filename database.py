@@ -122,6 +122,14 @@ def init_db():
             )
         """)
 
+        # ✅ banned_users — created here so dashboard never hits UndefinedTable
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS banned_users (
+                user_id   BIGINT PRIMARY KEY,
+                banned_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+
     logger.info("✅ Supabase DB: tables initialized")
 
 
@@ -400,3 +408,89 @@ def get_recent_errors(limit: int = 20) -> list:
             "SELECT * FROM error_logs ORDER BY created_at DESC LIMIT %s", (limit,)
         )
         return [dict(r) for r in c.fetchall()]
+
+# ─────────────────────────────────────────────
+# BANNED USERS FUNCTIONS
+# ─────────────────────────────────────────────
+
+def ban_user(user_id: int) -> bool:
+    with get_conn() as conn:
+        conn.cursor().execute(
+            "INSERT INTO banned_users (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (user_id,)
+        )
+    return True
+
+
+def unban_user(user_id: int) -> bool:
+    with get_conn() as conn:
+        conn.cursor().execute(
+            "DELETE FROM banned_users WHERE user_id=%s", (user_id,)
+        )
+    return True
+
+
+def is_banned(user_id: int) -> bool:
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("SELECT 1 FROM banned_users WHERE user_id=%s", (user_id,))
+        return c.fetchone() is not None
+
+
+def get_all_banned() -> list:
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("SELECT user_id, banned_at FROM banned_users ORDER BY banned_at DESC")
+        return [dict(r) for r in c.fetchall()]
+
+
+# ─────────────────────────────────────────────
+# ADMIN HELPER FUNCTIONS (for Telegram bot)
+# ─────────────────────────────────────────────
+
+def get_bot_stats() -> dict:
+    """Single query for all dashboard stats — used by /stats Telegram command."""
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) AS c FROM users"); total_users = c.fetchone()["c"]
+        c.execute("SELECT COALESCE(SUM(amount),0) AS c FROM expenses"); total_spent = c.fetchone()["c"]
+        c.execute("SELECT COUNT(*) AS c FROM notes"); total_notes = c.fetchone()["c"]
+        c.execute("SELECT COUNT(*) AS c FROM users WHERE created_at::date=CURRENT_DATE"); new_today = c.fetchone()["c"]
+        c.execute("SELECT COUNT(*) AS c FROM error_logs"); errors = c.fetchone()["c"]
+        c.execute("SELECT COUNT(*) AS c FROM banned_users"); banned = c.fetchone()["c"]
+    return {
+        "total_users": total_users,
+        "total_spent": float(total_spent),
+        "total_notes": total_notes,
+        "new_today": new_today,
+        "errors": errors,
+        "banned": banned,
+    }
+
+
+def get_user_info(user_id: int) -> dict | None:
+    """Full user profile for /userinfo command."""
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM users WHERE user_id=%s", (user_id,))
+        user = c.fetchone()
+        if not user:
+            return None
+        c.execute("SELECT COALESCE(SUM(amount),0) AS t FROM expenses WHERE user_id=%s", (user_id,))
+        spent = c.fetchone()["t"]
+        c.execute("SELECT COUNT(*) AS cnt FROM expenses WHERE user_id=%s", (user_id,))
+        exp_count = c.fetchone()["cnt"]
+    result = dict(user)
+    result["total_spent"] = float(spent)
+    result["expense_count"] = exp_count
+    return result
+
+
+def send_reminders_db(hour: str) -> list:
+    """Return user_ids that should receive a reminder at this hour. Uses PostgreSQL."""
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            "SELECT user_id FROM users WHERE daily_reminder=1 AND reminder_time LIKE %s",
+            (f"{hour}:%",)
+        )
+        return [r["user_id"] for r in c.fetchall()]
