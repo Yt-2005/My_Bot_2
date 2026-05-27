@@ -9,8 +9,8 @@ Required env vars:
 
 import os
 import logging
-import psycopg2
-import psycopg2.extras
+import psycopg
+
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -33,7 +33,7 @@ def get_conn():
     """Context manager for safe PostgreSQL connections."""
     if not DATABASE_URL:
         raise RuntimeError("❌ SUPABASE_DB_URL មិនត្រូវបានកំណត់!")
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    conn = psycopg.connect(DATABASE_URL, row_factory=psycopg.rows.dict_row)
     try:
         yield conn
         conn.commit()

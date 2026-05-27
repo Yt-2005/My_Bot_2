@@ -61,4 +61,4 @@ python-dotenv==1.0.1
 asyncio-throttle==1.0.2
 
 # PostgreSQL driver — supports Python 3.14
-psycopg[binary]==3.2.9
+psycopg[binary]==3.2.9`npsycopg[binary]==3.2.9
