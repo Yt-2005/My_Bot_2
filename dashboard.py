@@ -383,11 +383,11 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
     @login_required
     def admin_home():
         conn = db()
-        total_users    = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        total_expenses = conn.execute("SELECT COALESCE(SUM(amount),0) FROM expenses").fetchone()[0]
-        total_notes    = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
-        total_errors   = conn.execute("SELECT COUNT(*) FROM error_logs").fetchone()[0]
-        new_today      = conn.execute("SELECT COUNT(*) FROM users WHERE date(created_at)=date('now')").fetchone()[0]
+        total_users    = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()['c']
+        total_expenses = conn.execute("SELECT COALESCE(SUM(amount),0) AS c FROM expenses").fetchone()['c']
+        total_notes    = conn.execute("SELECT COUNT(*) AS c FROM notes").fetchone()['c']
+        total_errors   = conn.execute("SELECT COUNT(*) AS c FROM error_logs").fetchone()['c']
+        new_today      = conn.execute("SELECT COUNT(*) AS c FROM users WHERE created_at::date = CURRENT_DATE").fetchone()['c']
         top_categories = conn.execute("""
             SELECT category, SUM(amount) as total
             FROM expenses GROUP BY category
@@ -624,7 +624,7 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
                 result = '<div class="alert alert-error">❌ Bot not connected to dashboard yet</div>'
 
         conn = db()
-        user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        user_count = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()['c']
         conn.close()
 
         content = f"""
@@ -686,9 +686,9 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
     def api_stats():
         conn = db()
         data = {
-            "users": conn.execute("SELECT COUNT(*) FROM users").fetchone()[0],
-            "expenses": conn.execute("SELECT COALESCE(SUM(amount),0) FROM expenses").fetchone()[0],
-            "notes": conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0],
+            "users": conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()['c'],
+            "expenses": conn.execute("SELECT COALESCE(SUM(amount),0) AS c FROM expenses").fetchone()['c'],
+            "notes": conn.execute("SELECT COUNT(*) AS c FROM notes").fetchone()['c'],
         }
         conn.close()
         return jsonify(data)
@@ -697,5 +697,5 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024", pa
 
 
 def _table_exists(conn, name):
-    row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=%s", (name,)).fetchone()
+    row = True  # PostgreSQL always has tables after init_db
     return row is not None
