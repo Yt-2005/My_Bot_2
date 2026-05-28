@@ -82,6 +82,11 @@ from handlers.pdf_handler import (
     auto_pdf_detect, auto_pdf_extract_callback,
     WAITING_PDF_TEXT, WAITING_PDF_IMAGE,
 )
+from handlers.khmer_calendar_handler import (
+    khmer_calendar_cmd, khmer_calendar_callback,
+    calendar_convert_receive,
+    CALENDAR_CONVERT_WAIT,
+)
 
 # ── NEW: Extra admin commands callable from Telegram ──
 from config import ADMIN_IDS as _ADMIN_IDS
@@ -457,11 +462,23 @@ def build_app():
         allow_reentry=True,
     )
 
+    calendar_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("calendar", khmer_calendar_cmd),
+            CallbackQueryHandler(khmer_calendar_callback, pattern=r"^kcal_"),
+        ],
+        states={
+            CALENDAR_CONVERT_WAIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, calendar_convert_receive)],
+        },
+        fallbacks=fallbacks,
+        allow_reentry=True,
+    )
+
     for conv in [chat_conv, translate_conv, write_conv, summarize_conv,
                  explain_conv, ideas_conv, code_conv, ask_conv,
                  upscale_conv, notes_conv, add_conv, budget_conv,
                  date_conv, tag_conv, delete_conv, lang_conv, setpin_conv,
-                 reminder_conv, broadcast_conv, pdf_conv]:
+                 reminder_conv, broadcast_conv, pdf_conv, calendar_conv]:
         app.add_handler(conv)
 
     app.add_handler(CommandHandler("start",       start))
@@ -474,6 +491,7 @@ def build_app():
     app.add_handler(CommandHandler("recurring",   recurring))
     app.add_handler(CommandHandler("ai",          ai_finance))
     app.add_handler(CommandHandler("pdf",         pdf_cmd))
+    app.add_handler(CommandHandler("calendar",    khmer_calendar_cmd))
     # ── New AI commands ──
     app.add_handler(CommandHandler("translate",   translate_cmd))
     app.add_handler(CommandHandler("write",       write_cmd))
@@ -507,6 +525,7 @@ def build_app():
     app.add_handler(CallbackQueryHandler(write_format_callback,      pattern=r"^write_"))
     app.add_handler(CallbackQueryHandler(code_action_callback,       pattern=r"^code_"))
     app.add_handler(CallbackQueryHandler(ai_menu_callback,           pattern=r"^(menu_ai|ai_)"))
+    app.add_handler(CallbackQueryHandler(khmer_calendar_callback,     pattern=r"^kcal_"))
     app.add_handler(CallbackQueryHandler(menu_callback,              pattern=r"^menu_|^cancel$"))
 
     # Auto-detect PDF files
