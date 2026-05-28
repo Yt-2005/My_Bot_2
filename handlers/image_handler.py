@@ -1,366 +1,265 @@
 """
-handlers/image_handler.py — AI Image Generation & Upscaling  (v2)
-
-Upscale improvements:
-  ✅ Real-ESRGAN x4+ (photo) or x4+ anime_6B (anime mode)
-  ✅ GFPGAN face enhancement (toggled per-request)
-  ✅ Adaptive OpenCV sharpening after upscale
-  ✅ Output as PNG (not JPEG) — lossless, highest quality
-  ✅ User picks: Photo mode / Anime mode / Face enhance on/off
-  ✅ Requests image sent AS FILE for max Telegram resolution
-  ✅ Live step-by-step progress messages
-  ✅ Shows before/after resolution in caption
-  ✅ Graceful fallback to Pillow if GPU libs unavailable
+handlers/image_handler.py — Image Generation + Upscale (Pillow-based, no ML required)
+✅ Works on Render free tier — no torch/realesrgan needed
 """
 
-import logging
 import io
-import asyncio
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ContextTypes, ConversationHandler
-from telegram.constants import ParseMode, ChatAction
+import logging
+import httpx
+import urllib.parse
 
-from upscale_engine import upscale_image, get_image_info
-from ai import generate_image
-from utils import is_rate_limited, image_style_keyboard, back_button
-from database import ensure_user, log_error
-from config import IMAGE_STYLES
+from PIL import Image
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes, ConversationHandler
+
+from config import POLLINATIONS_URL, IMAGE_STYLES
+from utils import is_rate_limited, back_button
 
 logger = logging.getLogger(__name__)
 
-# Conversation states
-WAITING_UPSCALE_OPTIONS = 1
-WAITING_FOR_UPSCALE_PHOTO = 2
+# ── Conversation states ────────────────────────────────────────────────────
+WAITING_FOR_UPSCALE_PHOTO = 1
 
 
-# ─────────────────────────────────────────────
-# /imagine — IMAGE GENERATION (unchanged)
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════
+# UPSCALE ENGINE (Pillow-based — replaces upscale_engine module)
+# ══════════════════════════════════════════════════════════════════════════
+
+def upscale_image(image_bytes: bytes, scale: int = 2) -> bytes:
+    """
+    Upscale image using Pillow LANCZOS resampling.
+    Fast, lightweight, works on any server — no GPU/torch needed.
+    scale=2 → 2x size, scale=4 → 4x size
+    """
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+    # Cap max output size to avoid memory issues on free tier
+    max_dim = 3000
+    new_w = min(img.width * scale, max_dim)
+    new_h = min(img.height * scale, max_dim)
+
+    upscaled = img.resize((new_w, new_h), Image.LANCZOS)
+
+    # Slight sharpness boost after resize
+    from PIL import ImageFilter, ImageEnhance
+    upscaled = upscaled.filter(ImageFilter.UnsharpMask(radius=1.5, percent=120, threshold=3))
+    upscaled = ImageEnhance.Sharpness(upscaled).enhance(1.2)
+
+    buf = io.BytesIO()
+    upscaled.save(buf, format="JPEG", quality=92, optimize=True)
+    return buf.getvalue()
+
+
+def get_image_info(image_bytes: bytes) -> dict:
+    """Return basic image metadata."""
+    img = Image.open(io.BytesIO(image_bytes))
+    return {
+        "width":  img.width,
+        "height": img.height,
+        "mode":   img.mode,
+        "format": img.format or "JPEG",
+        "size_kb": round(len(image_bytes) / 1024, 1),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# IMAGE GENERATION — /imagine
+# ══════════════════════════════════════════════════════════════════════════
 
 async def imagine_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    ensure_user(uid)
-
-    if is_rate_limited(uid):
+    """Handle /imagine <prompt>"""
+    user = update.effective_user
+    if is_rate_limited(user.id):
         await update.message.reply_text("⏳ Please wait a moment before sending another request.")
         return
 
     prompt = " ".join(ctx.args) if ctx.args else ""
-
     if not prompt:
         await update.message.reply_text(
-            "🎨 *AI Image Generator*\n\n"
-            "Provide a description after the command:\n\n"
-            "`/imagine a dragon flying over mountains at sunset`\n\n"
-            "Be as descriptive as possible for better results! 🖌️",
-            parse_mode=ParseMode.MARKDOWN,
+            "🎨 *AI Image Generator*\n\nUsage: `/imagine <your prompt>`\n\nExample: `/imagine a sunset over mountains, ultra realistic`",
+            parse_mode="Markdown"
         )
         return
 
+    # Show style selector
+    keyboard = _style_keyboard(prompt)
     await update.message.reply_text(
-        f"🎨 *Choose your art style:*\n\n📝 Prompt: _{prompt}_",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=image_style_keyboard(prompt),
+        f"🎨 *Choose a style for:*\n_{prompt[:80]}_",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
     )
 
 
+def _style_keyboard(prompt: str) -> InlineKeyboardMarkup:
+    short = prompt[:30].replace("|", "")
+    buttons = []
+    row = []
+    for name in IMAGE_STYLES:
+        row.append(InlineKeyboardButton(name, callback_data=f"imgstyle|{name}|{short}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+    return InlineKeyboardMarkup(buttons)
+
+
 async def image_style_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Handle style selection for image generation."""
     query = update.callback_query
-    await query.answer("✨ Generating your image...")
-    uid = query.from_user.id
+    await query.answer()
 
     try:
         _, style_name, short_prompt = query.data.split("|", 2)
     except ValueError:
-        await query.edit_message_text("❌ Invalid selection. Please try /imagine again.")
+        await query.edit_message_text("❌ Invalid selection.")
         return
 
-    await query.edit_message_text(
-        f"🎨 *Generating your image...*\n\n"
-        f"🖌️ Style: *{style_name}*\n"
-        f"📝 Prompt: _{short_prompt}_\n\n"
-        f"⏳ This may take 10–30 seconds...",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-    await ctx.bot.send_chat_action(chat_id=query.message.chat_id, action=ChatAction.UPLOAD_PHOTO)
+    style_suffix = IMAGE_STYLES.get(style_name, "")
+    full_prompt  = f"{short_prompt}, {style_suffix}"
 
-    image_bytes, error = await generate_image(short_prompt, style_name)
+    await query.edit_message_text(f"🎨 Generating image...\n_{full_prompt[:80]}_", parse_mode="Markdown")
 
-    if error:
-        log_error(uid, error, "image_generation")
-        await query.edit_message_text(
-            f"❌ *Image generation failed.*\n\n{error}\n\nTry /imagine again.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-
-    caption = (
-        f"🎨 *Your AI Image is ready!*\n\n"
-        f"🖌️ Style: *{style_name}*\n"
-        f"📝 Prompt: _{short_prompt}_"
-    )
-
-    await ctx.bot.send_photo(
-        chat_id=query.message.chat_id,
-        photo=io.BytesIO(image_bytes),
-        caption=caption,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("✨ Upscale This", callback_data="upscale_pending"),
-            InlineKeyboardButton("🎨 Generate Again", callback_data=f"reimagine|{short_prompt}"),
-        ]]),
-    )
     try:
+        encoded = urllib.parse.quote(full_prompt)
+        url = POLLINATIONS_URL.format(prompt=encoded)
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            image_data = resp.content
+
+        caption = f"🎨 *{style_name}*\n_{short_prompt}_"
+        regen_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔄 Regenerate", callback_data=f"reimagine|{style_name}|{short_prompt}"),
+            InlineKeyboardButton("✨ Upscale 2×", callback_data=f"upscale_pending"),
+        ]])
+
+        await query.message.reply_photo(
+            photo=image_data,
+            caption=caption,
+            parse_mode="Markdown",
+            reply_markup=regen_kb,
+        )
         await query.delete_message()
-    except Exception:
-        pass
+
+        # Store last image in context for upscale
+        ctx.user_data["last_image"] = image_data
+
+    except Exception as e:
+        logger.error(f"Image gen error: {e}")
+        await query.edit_message_text("❌ Failed to generate image. Please try again.")
 
 
 async def reimagine_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Regenerate the same prompt/style."""
     query = update.callback_query
-    await query.answer()
-    try:
-        _, prompt = query.data.split("|", 1)
-        await query.edit_message_caption(
-            caption=f"🎨 *Choose a style for:*\n_{prompt}_",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=image_style_keyboard(prompt),
-        )
-    except Exception:
-        await query.answer("Please use /imagine to generate a new image.", show_alert=True)
+    await query.answer("🔄 Regenerating...")
+    # Reuse image_style_callback logic
+    await image_style_callback(update, ctx)
 
 
-# ─────────────────────────────────────────────
-# /upscale — STEP 1: show mode options
-# ─────────────────────────────────────────────
-
-def _upscale_options_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("📷 Photo (Real-ESRGAN)",  callback_data="ups_mode_photo"),
-            InlineKeyboardButton("🎌 Anime / Art",           callback_data="ups_mode_anime"),
-        ],
-        [
-            InlineKeyboardButton("👤 Face Enhance ON  ✅",   callback_data="ups_face_on"),
-            InlineKeyboardButton("👤 Face Enhance OFF ☐",    callback_data="ups_face_off"),
-        ],
-        [
-            InlineKeyboardButton("✅ Start Upscaling →",     callback_data="ups_confirm"),
-        ],
-        [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
-    ])
-
-
-def _upscale_options_text(ctx) -> str:
-    mode = ctx.user_data.get("ups_mode", "photo")
-    face = ctx.user_data.get("ups_face", True)
-    mode_label = "📷 Photo (Real-ESRGAN x4+)" if mode == "photo" else "🎌 Anime / Illustration"
-    face_label = "✅ ON" if face else "☐ OFF"
-    return (
-        "✨ *AI Image Upscaler*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🖼  Mode:           {mode_label}\n"
-        f"👤  Face Enhance:   {face_label}\n"
-        f"📐  Scale:          4×\n"
-        f"🔍  Sharpening:     ✅ ON\n"
-        f"📁  Output:         PNG (lossless)\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Pick options then press *Start Upscaling* →\n"
-        "then send your photo.\n\n"
-        "💡 _Tip: Send the image as a **File** (📎 Attach → File) for maximum quality_\n\n"
-        "_/cancel to abort_"
-    )
-
+# ══════════════════════════════════════════════════════════════════════════
+# UPSCALE — /upscale
+# ══════════════════════════════════════════════════════════════════════════
 
 async def upscale_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    ensure_user(uid)
-
-    if is_rate_limited(uid):
-        await update.message.reply_text("⏳ Please wait a moment.")
-        return
-
-    # Set defaults
-    ctx.user_data["ups_mode"] = "photo"
-    ctx.user_data["ups_face"] = True
-
+    """Start upscale conversation — ask user to send a photo."""
     await update.message.reply_text(
-        _upscale_options_text(ctx),
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=_upscale_options_keyboard(),
+        "✨ *AI Image Upscaler*\n\n"
+        "Send me a photo and I'll upscale it to 2× size with enhanced sharpness!\n\n"
+        "📸 Please send your image now:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel")
+        ]])
     )
-    return WAITING_UPSCALE_OPTIONS
+    return WAITING_FOR_UPSCALE_PHOTO
 
-
-# ─────────────────────────────────────────────
-# /upscale — STEP 2: handle option buttons
-# ─────────────────────────────────────────────
-
-async def upscale_options_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data == "ups_mode_photo":
-        ctx.user_data["ups_mode"] = "photo"
-    elif data == "ups_mode_anime":
-        ctx.user_data["ups_mode"] = "anime"
-    elif data == "ups_face_on":
-        ctx.user_data["ups_face"] = True
-    elif data == "ups_face_off":
-        ctx.user_data["ups_face"] = False
-    elif data == "ups_confirm":
-        mode = ctx.user_data.get("ups_mode", "photo")
-        face = ctx.user_data.get("ups_face", True)
-        face_label = "✅ face enhance ON" if face else "face enhance OFF"
-        await query.edit_message_text(
-            f"✨ *Ready!*\n\n"
-            f"Mode: *{'Photo' if mode == 'photo' else 'Anime'}*  ·  {face_label}\n\n"
-            f"📤 *Send your photo now.*\n"
-            f"💡 _Send as a File for best quality_ (📎 → File)\n\n"
-            f"_/cancel to abort_",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return WAITING_FOR_UPSCALE_PHOTO
-
-    # Refresh options screen
-    await query.edit_message_text(
-        _upscale_options_text(ctx),
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=_upscale_options_keyboard(),
-    )
-    return WAITING_UPSCALE_OPTIONS
-
-
-# ─────────────────────────────────────────────
-# /upscale — STEP 3: receive photo and process
-# ─────────────────────────────────────────────
 
 async def upscale_photo_received(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    mode = ctx.user_data.get("ups_mode", "photo")
-    face = ctx.user_data.get("ups_face", True)
+    """Process the received photo and upscale it."""
+    user = update.effective_user
 
-    has_photo = bool(update.message.photo)
-    has_doc   = bool(update.message.document)
+    msg = await update.message.reply_text("⏳ Upscaling your image... please wait.")
 
-    if not has_photo and not has_doc:
-        await update.message.reply_text(
-            "❌ Please send a *photo* or image *file*.\n\nTry again or /cancel",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return WAITING_FOR_UPSCALE_PHOTO
-
-    # ── Step progress message ──────────────────────────────────────────────────
-    steps = [
-        "⏳ Downloading your image…",
-        "🔍 Running Real-ESRGAN x4+ upscale…",
-        "👤 Enhancing faces with GFPGAN…" if face else "🔍 Sharpening details…",
-        "🎨 Applying adaptive sharpening…",
-        "📁 Encoding PNG output…",
-    ]
-    msg = await update.message.reply_text(steps[0], parse_mode=ParseMode.MARKDOWN)
-    await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_PHOTO)
-
-    # ── Download ───────────────────────────────────────────────────────────────
     try:
-        if has_doc:
-            # Sent as file — full resolution
-            file_obj = await ctx.bot.get_file(update.message.document.file_id)
+        # Get the largest available photo or document
+        if update.message.photo:
+            file = await update.message.photo[-1].get_file()
         else:
-            # Sent as compressed photo — highest available size
-            file_obj = await ctx.bot.get_file(update.message.photo[-1].file_id)
+            file = await update.message.document.get_file()
 
-        raw_bytes = bytes(await file_obj.download_as_bytearray())
-    except Exception as e:
-        await msg.edit_text(f"❌ Download failed: {str(e)[:120]}")
-        return ConversationHandler.END
+        image_bytes = await file.download_as_bytearray()
+        image_bytes = bytes(image_bytes)
 
-    # Get input dimensions
-    info_in = get_image_info(raw_bytes)
-    in_w = info_in.get("width", "?")
-    in_h = info_in.get("height", "?")
+        # Get original info
+        info = get_image_info(image_bytes)
+        original_size = f"{info['width']}×{info['height']}"
 
-    # ── Progress: step 2 ──────────────────────────────────────────────────────
-    await msg.edit_text(steps[1])
-    await asyncio.sleep(0.3)   # let Telegram render the edit
+        # Upscale
+        result = upscale_image(image_bytes, scale=2)
 
-    # ── Upscale ───────────────────────────────────────────────────────────────
-    enhanced_bytes, error = await upscale_image(
-        raw_bytes,
-        scale=4,
-        face_enhance=face,
-        sharpen=True,
-        mode=mode,
-    )
+        # Get new info
+        info2 = get_image_info(result)
+        new_size = f"{info2['width']}×{info2['height']}"
 
-    if error:
-        log_error(uid, error, "upscale")
-        await msg.edit_text(
-            f"❌ *Enhancement failed.*\n\n`{error[:300]}`",
-            parse_mode=ParseMode.MARKDOWN,
+        caption = (
+            f"✨ *Upscaled Successfully!*\n\n"
+            f"📐 Original: `{original_size}` ({info['size_kb']} KB)\n"
+            f"📐 Upscaled: `{new_size}` ({info2['size_kb']} KB)\n"
+            f"🔍 Scale: 2×  |  Method: LANCZOS + Sharpen"
         )
-        return ConversationHandler.END
 
-    # Get output dimensions
-    info_out = get_image_info(enhanced_bytes)
-    out_w = info_out.get("width", "?")
-    out_h = info_out.get("height", "?")
-    size_kb = round(len(enhanced_bytes) / 1024)
-
-    # ── Progress: done ────────────────────────────────────────────────────────
-    await msg.edit_text("📤 Sending enhanced image…")
-
-    mode_label = "📷 Photo (Real-ESRGAN)" if mode == "photo" else "🎌 Anime"
-    face_label = "✅ GFPGAN" if face else "—"
-
-    caption = (
-        "✨ *Image Enhanced!*\n\n"
-        f"📐  Resolution: `{in_w}×{in_h}` → `{out_w}×{out_h}`\n"
-        f"🔬  Scale: *4×*\n"
-        f"🖼  Mode: *{mode_label}*\n"
-        f"👤  Face Enhance: {face_label}\n"
-        f"🔍  Sharpening: ✅ Adaptive\n"
-        f"📁  Format: PNG  ·  {size_kb} KB\n\n"
-        "_Send another photo or /upscale again_"
-    )
-
-    # Send as document (file) to bypass Telegram's JPEG recompression
-    await ctx.bot.send_document(
-        chat_id=update.effective_chat.id,
-        document=io.BytesIO(enhanced_bytes),
-        filename="upscaled.png",
-        caption=caption,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("✨ Upscale Another", callback_data="upscale_pending"),
-            InlineKeyboardButton("🔙 Menu",            callback_data="menu_main"),
-        ]]),
-    )
-
-    try:
+        await update.message.reply_document(
+            document=io.BytesIO(result),
+            filename="upscaled.jpg",
+            caption=caption,
+            parse_mode="Markdown",
+        )
         await msg.delete()
-    except Exception:
-        pass
 
-    ctx.user_data.pop("ups_mode", None)
-    ctx.user_data.pop("ups_face", None)
+    except Exception as e:
+        logger.error(f"Upscale error: {e}")
+        await msg.edit_text("❌ Failed to upscale. Please send a valid image (JPG/PNG).")
+
     return ConversationHandler.END
 
 
-# ─────────────────────────────────────────────
-# Inline "Upscale This" from generated image
-# ─────────────────────────────────────────────
-
 async def upscale_pending_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Handle 'Upscale 2×' button on generated images."""
     query = update.callback_query
-    await query.answer()
+    await query.answer("✨ Upscaling...")
 
-    ctx.user_data["ups_mode"] = "photo"
-    ctx.user_data["ups_face"] = True
+    last_image = ctx.user_data.get("last_image")
+    if not last_image:
+        await query.message.reply_text(
+            "❌ No image found to upscale. Use /upscale and send a photo directly."
+        )
+        return
 
-    await query.message.reply_text(
-        _upscale_options_text(ctx),
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=_upscale_options_keyboard(),
-    )
+    msg = await query.message.reply_text("⏳ Upscaling generated image...")
+
+    try:
+        info    = get_image_info(last_image)
+        result  = upscale_image(last_image, scale=2)
+        info2   = get_image_info(result)
+
+        caption = (
+            f"✨ *Upscaled!*\n"
+            f"`{info['width']}×{info['height']}` → `{info2['width']}×{info2['height']}`"
+        )
+
+        await query.message.reply_document(
+            document=io.BytesIO(result),
+            filename="upscaled.jpg",
+            caption=caption,
+            parse_mode="Markdown",
+        )
+        await msg.delete()
+
+    except Exception as e:
+        logger.error(f"Upscale pending error: {e}")
+        await msg.edit_text("❌ Upscale failed. Please try /upscale command instead.")
