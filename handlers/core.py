@@ -346,15 +346,10 @@ async def _menu_calendar(query, ctx):
         [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
     ])
     await query.edit_message_text(
-        "🗓 *ប្រតិទិនខ្មែរ — Khmer Calendar*
-
-"
-        "📅 *Today* — Today\'s Khmer date & Buddhist Era
-"
-        "🌙 *Lunar* — 7-day lunar calendar view
-"
-        "🎉 *Holidays* — Upcoming festivals & public holidays
-"
+        "🗓 *ប្រតិទិនខ្មែរ — Khmer Calendar*\n\n"
+        "📅 *Today* — Today's Khmer date & Buddhist Era\n"
+        "🌙 *Lunar* — 7-day lunar calendar view\n"
+        "🎉 *Holidays* — Upcoming festivals & public holidays\n"
         "🔄 *Convert* — Gregorian ↔ Buddhist Era",
         parse_mode="Markdown",
         reply_markup=kb,
