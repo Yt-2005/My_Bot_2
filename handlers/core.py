@@ -1,241 +1,329 @@
 """
-handlers/core.py — Core bot commands and menu navigation
-/start, /help, /cancel, /clearchat, inline menu callbacks
+handlers/core.py — Core handlers: /start, /help, /cancel, menu_callback
+All menu_ callbacks handled here with full Back button navigation.
 """
 
 import logging
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
-from telegram.constants import ParseMode
-
-from database import ensure_user, get_language, clear_chat_history
+from database import ensure_user
 from utils import main_menu_keyboard, back_button
-import config as _cfg
+from config import ADMIN_IDS
 
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════
 # /start
-# ─────────────────────────────────────────────
-
+# ══════════════════════════════════════════════
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Welcome message with main menu."""
     user = update.effective_user
     ensure_user(user.id, user.username or "")
 
-    if _cfg.MAINTENANCE_MODE:
-        await update.message.reply_text(
-            "🔧 *Bot is under maintenance.*\nPlease come back later!",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-
-    lang = get_language(user.id)
-    if lang == "km":
-        welcome = (
-            f"👋 *សួស្ដី, {user.first_name}!*\n\n"
-            "ខ្ញុំជា AI assistant bot របស់អ្នក។ ខ្ញុំអាចធ្វើបាន:\n\n"
-            "🎨 *AI Image Generator* — បង្កើតរូបភាពស្រស់ស្អាត\n"
-            "✨ *AI Upscaler* — ធ្វើឱ្យរូបភាពមានគុណភាព 4K\n"
-            "🤖 *AI Chat* — សន្ទនាឆ្លាត\n"
-            "📝 *Notes* — រក្សាទុកការចំណាំ\n"
-            "💰 *Expenses* — តាមដានការចំណាយ\n\n"
-            "👇 *ជ្រើសរើសពីម៉ឺនុយ:*"
-        )
-    else:
-        welcome = (
-            f"👋 *Hello, {user.first_name}!*\n\n"
-            "I'm your smart AI assistant bot. Here's what I can do:\n\n"
-            "🎨 *AI Image Generator* — Create stunning images\n"
-            "✨ *AI Upscaler* — Enhance photos to 4K quality\n"
-            "🤖 *AI Chat* — Smart conversations\n"
-            "📝 *Notes* — Save personal reminders\n"
-            "💰 *Expenses* — Track your spending\n\n"
-            "👇 *Choose from the menu below:*"
-        )
-
-    await update.message.reply_text(
-        welcome,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=main_menu_keyboard(),
-    )
-
-
-# ─────────────────────────────────────────────
-# /help
-# ─────────────────────────────────────────────
-
-async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Show all available commands."""
     text = (
-        "📖 *All Commands*\n\n"
-        "━━━ 🤖 *AI Features* ━━━\n"
-        "/imagine   — 🎨 Generate AI images\n"
-        "/upscale   — ✨ Enhance your photos\n"
-        "/chat      — 💬 Chat with AI\n"
-        "/clearchat — 🔄 Reset AI memory\n\n"
-        "━━━ 📝 *Notes* ━━━\n"
-        "/note add    — Add a note\n"
-        "/note list   — View all notes\n"
-        "/note delete — Delete a note\n\n"
+        f"👋 *Welcome, {user.first_name}!*\n\n"
+        "I'm your all-in-one AI assistant:\n"
+        "💰 Track expenses • 🤖 AI chat • 🎨 Image gen\n"
+        "📝 Notes • 📄 PDF tools • ✨ Image upscaler\n\n"
+        "Choose an option below:"
+    )
+    if update.message:
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
+    else:
+        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
+
+
+# ══════════════════════════════════════════════
+# /help
+# ══════════════════════════════════════════════
+async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = _help_text()
+    kb = back_button("menu_main")
+    if update.message:
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    else:
+        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+
+
+def _help_text() -> str:
+    return (
+        "📖 *Bot Commands*\n\n"
         "━━━ 💰 *Expenses* ━━━\n"
-        "/add       — Add expense\n"
-        "/today     — Today's expenses\n"
-        "/month     — Monthly summary\n"
-        "/compare   — Compare months\n"
-        "/budget    — Set monthly budget\n"
-        "/date      — Search by date\n"
-        "/tags      — Search by tag\n"
-        "/delete    — Delete expense\n"
-        "/recurring — Recurring expenses\n"
-        "/ai        — 💡 AI finance advice\n\n"
+        "/add — Record new expense\n"
+        "/today — Today's total\n"
+        "/month — Monthly breakdown\n"
+        "/compare — Compare months\n"
+        "/budget — Set spending limit\n"
+        "/recurring — View recurring expenses\n"
+        "/date — Search by date\n"
+        "/tags — Search by tag\n"
+        "/delete — Delete an expense\n"
+        "/ai — AI financial advice\n\n"
+        "━━━ 🎨 *AI & Media* ━━━\n"
+        "/imagine — Generate AI image\n"
+        "/upscale — Upscale a photo\n"
+        "/chat — AI conversation\n\n"
+        "━━━ 📄 *PDF Tools* ━━━\n"
+        "/pdf — PDF menu\n"
+        "  📝 Text → PDF\n"
+        "  🖼️ Image → PDF\n"
+        "  📄 PDF → Text\n\n"
+        "━━━ 📝 *Notes* ━━━\n"
+        "/note — Manage notes\n\n"
         "━━━ ⚙️ *Settings* ━━━\n"
-        "/lang      — Change language (KH/EN)\n"
-        "/setpin    — Set security PIN\n"
-        "/reminder  — Set daily reminder\n\n"
-        "━━━ 📋 *Other* ━━━\n"
-        "/start  — Main menu\n"
-        "/help   — This help page\n"
-        "/cancel — Cancel current action\n"
-    )
-    await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=back_button("menu_main"),
+        "/lang — Change language\n"
+        "/setpin — Set PIN lock\n"
+        "/reminder — Daily reminder\n\n"
+        "/cancel — Cancel any action"
     )
 
 
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════
 # /cancel
-# ─────────────────────────────────────────────
-
+# ══════════════════════════════════════════════
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Cancel any active conversation."""
     ctx.user_data.clear()
     await update.message.reply_text(
-        "❌ *Cancelled.* Use /start to go back to the main menu.",
-        parse_mode=ParseMode.MARKDOWN,
+        "❌ *Cancelled.*\n\nUse /start to go back to the main menu.",
+        parse_mode="Markdown",
+        reply_markup=back_button("menu_main"),
     )
     return ConversationHandler.END
 
 
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════
 # /clearchat
-# ─────────────────────────────────────────────
-
+# ══════════════════════════════════════════════
 async def clear_chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Clear user's AI chat memory."""
-    uid = update.effective_user.id
-    clear_chat_history(uid)
+    from database import clear_chat_memory
+    try:
+        clear_chat_memory(update.effective_user.id)
+    except Exception:
+        pass
     await update.message.reply_text(
-        "🔄 *Chat memory cleared!*\nAI will start fresh.",
-        parse_mode=ParseMode.MARKDOWN,
+        "🧹 *Chat memory cleared!*\n\nStart a fresh conversation with /chat.",
+        parse_mode="Markdown",
+        reply_markup=back_button("menu_main"),
     )
 
 
-# ─────────────────────────────────────────────
-# INLINE MENU CALLBACKS
-# ─────────────────────────────────────────────
-
-MENU_TEXTS = {
-    "menu_imagegen": (
-        "🎨 *AI Image Generator*\n\n"
-        "Turn your ideas into stunning images!\n\n"
-        "*How to use:*\n"
-        "Send /imagine followed by your description\n\n"
-        "*Example:*\n"
-        "`/imagine a cat sitting on the moon at night`\n\n"
-        "Then pick your preferred art style 🖼️"
-    ),
-    "menu_upscale": (
-        "✨ *AI Image Upscaler*\n\n"
-        "Upload any photo and I'll enhance it:\n"
-        "• 📐 Upscale to near-4K resolution\n"
-        "• 🔍 Sharpen blurry details\n"
-        "• 🎨 Boost colors and contrast\n"
-        "• 🧹 Reduce noise\n\n"
-        "*How to use:*\n"
-        "Simply send /upscale then upload your photo!"
-    ),
-    "menu_chat": (
-        "🤖 *AI Chat Assistant*\n\n"
-        "I can help you with:\n"
-        "• 💡 Questions and explanations\n"
-        "• ✍️ Writing and editing\n"
-        "• 🧮 Calculations and analysis\n"
-        "• 🌍 Translations\n"
-        "• And much more!\n\n"
-        "*How to use:*\n"
-        "Send /chat then start typing!"
-    ),
-    "menu_notes": (
-        "📝 *My Notes*\n\nQuick personal reminders:\n\n"
-        "• `/note add` — Write a new note\n"
-        "• `/note list` — See all your notes\n"
-        "• `/note delete` — Remove a note"
-    ),
-    "menu_expenses": (
-        "💰 *Expense Tracker*\n\n"
-        "Track your spending easily:\n\n"
-        "• `/add` — Record new expense\n"
-        "• `/today` — Today's total\n"
-        "• `/month` — Monthly breakdown\n"
-        "• `/budget` — Set spending limit\n"
-        "• `/ai` — Get AI financial advice"
-    ),
-    "menu_settings": (
-        "⚙️ *Settings*\n\n"
-        "• `/lang` — Change language (KH/EN)\n"
-        "• `/setpin` — Set security PIN\n"
-        "• `/reminder` — Daily spending reminder\n"
-        "• `/clearchat` — Reset AI chat memory"
-    ),
-    "menu_ai_finance": (
-        "🤖 *AI Financial Advisor*\n\n"
-        "Get personalized money-saving tips based on your spending data!\n\n"
-        "Use `/ai` to get your analysis."
-    ),
-}
-
-
+# ══════════════════════════════════════════════
+# MENU CALLBACK ROUTER — handles ALL menu_ callbacks
+# ══════════════════════════════════════════════
 async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Handle all inline menu button presses."""
     query = update.callback_query
     await query.answer()
     data = query.data
 
-    if data == "cancel":
-        await query.edit_message_text("❌ Cancelled.")
-        return
+    handlers = {
+        "menu_main":       _menu_main,
+        "cancel":          _menu_main,
+        "menu_imagegen":   _menu_imagegen,
+        "menu_upscale":    _menu_upscale,
+        "menu_chat":       _menu_chat,
+        "menu_notes":      _menu_notes,
+        "menu_expenses":   _menu_expenses,
+        "menu_ai_finance": _menu_ai_finance,
+        "menu_pdf":        _menu_pdf,
+        "menu_settings":   _menu_settings,
+        "menu_help":       _menu_help,
+    }
 
-    if data == "menu_main":
+    fn = handlers.get(data)
+    if fn:
+        await fn(query, ctx)
+    else:
         await query.edit_message_text(
-            "🏠 *Main Menu*\n\nChoose what you'd like to do:",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=main_menu_keyboard(),
-        )
-        return
-
-    if data == "menu_help":
-        await query.edit_message_text(
-            "📖 *Help & Commands*\n\n"
-            "Use /help to see all commands.\n\n"
-            "For AI images: /imagine\n"
-            "For upscaling: /upscale\n"
-            "For AI chat: /chat",
-            parse_mode=ParseMode.MARKDOWN,
+            "❓ Unknown option. Use /start.",
             reply_markup=back_button("menu_main"),
         )
-        return
 
-    if data in MENU_TEXTS:
-        await query.edit_message_text(
-            MENU_TEXTS[data],
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=back_button("menu_main"),
-        )
-        return
 
-    # Unknown callback — silently ignore
-    logger.warning(f"Unknown menu callback: {data}")
+# ── Individual menu screens ──────────────────
+
+async def _menu_main(query, ctx):
+    await query.edit_message_text(
+        "🏠 *Main Menu*\n\nChoose an option:",
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+async def _menu_imagegen(query, ctx):
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎨 Generate Image", switch_inline_query_current_chat="/imagine ")],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
+    ])
+    await query.edit_message_text(
+        "🎨 *AI Image Generator*\n\n"
+        "Use /imagine followed by your prompt.\n\n"
+        "*Example:*\n`/imagine a sunset over mountains, photorealistic`\n\n"
+        "Available styles:\n"
+        "🌄 Realistic • 🎌 Anime • 🌆 Cyberpunk\n"
+        "🕹️ Pixel Art • 🎲 3D Render",
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
+
+
+async def _menu_upscale(query, ctx):
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✨ Start Upscaling", switch_inline_query_current_chat="/upscale")],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
+    ])
+    await query.edit_message_text(
+        "✨ *AI Image Upscaler*\n\n"
+        "Send /upscale and then send a photo to enhance its resolution.\n\n"
+        "Great for:\n"
+        "• Low-res photos 📷\n"
+        "• Old family pictures 🖼️\n"
+        "• Blurry screenshots 📱",
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
+
+
+async def _menu_chat(query, ctx):
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Start Chatting", switch_inline_query_current_chat="/chat")],
+        [InlineKeyboardButton("🧹 Clear Memory", callback_data="menu_clearchat")],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
+    ])
+    await query.edit_message_text(
+        "🤖 *AI Chat*\n\n"
+        "Have a conversation with AI.\n"
+        "The bot remembers your last 10 messages.\n\n"
+        "Use /chat to start chatting.\n"
+        "Use /clearchat to reset memory.",
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
+
+
+async def _menu_notes(query, ctx):
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("➕ Add Note", switch_inline_query_current_chat="/note add"),
+            InlineKeyboardButton("📋 List Notes", switch_inline_query_current_chat="/note list"),
+        ],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
+    ])
+    await query.edit_message_text(
+        "📝 *My Notes*\n\n"
+        "Save and manage your personal notes.\n\n"
+        "Commands:\n"
+        "• /note — Open notes menu\n"
+        "• Add, list, or delete notes",
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
+
+
+async def _menu_expenses(query, ctx):
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("➕ Add",     switch_inline_query_current_chat="/add"),
+            InlineKeyboardButton("📅 Today",   switch_inline_query_current_chat="/today"),
+        ],
+        [
+            InlineKeyboardButton("📆 Month",   switch_inline_query_current_chat="/month"),
+            InlineKeyboardButton("💰 Budget",  switch_inline_query_current_chat="/budget"),
+        ],
+        [
+            InlineKeyboardButton("📊 Compare", switch_inline_query_current_chat="/compare"),
+            InlineKeyboardButton("🔁 Recurring", switch_inline_query_current_chat="/recurring"),
+        ],
+        [
+            InlineKeyboardButton("🔍 By Date", switch_inline_query_current_chat="/date"),
+            InlineKeyboardButton("🏷️ By Tag",  switch_inline_query_current_chat="/tags"),
+        ],
+        [
+            InlineKeyboardButton("🗑️ Delete",  switch_inline_query_current_chat="/delete"),
+        ],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
+    ])
+    await query.edit_message_text(
+        "💰 *Expense Tracker*\n\n"
+        "Track your spending easily with AI:\n\n"
+        "• /add — Record new expense\n"
+        "• /today — Today's total\n"
+        "• /month — Monthly breakdown\n"
+        "• /budget — Set spending limit\n"
+        "• /compare — Compare months\n"
+        "• /recurring — Recurring expenses\n"
+        "• /date — Search by date\n"
+        "• /tags — Search by tag\n"
+        "• /delete — Delete expense",
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
+
+
+async def _menu_ai_finance(query, ctx):
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🤖 Get AI Advice", switch_inline_query_current_chat="/ai")],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
+    ])
+    await query.edit_message_text(
+        "🤖 *AI Financial Advisor*\n\n"
+        "Get personalized financial insights based on your spending data.\n\n"
+        "Use /ai to ask questions like:\n"
+        "• _\"Where am I spending the most?\"_\n"
+        "• _\"How can I save more this month?\"_\n"
+        "• _\"Am I close to my budget?\"_",
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
+
+
+async def _menu_pdf(query, ctx):
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📝 Text → PDF", callback_data="pdf_text"),
+            InlineKeyboardButton("🖼️ Image → PDF", callback_data="pdf_image"),
+        ],
+        [
+            InlineKeyboardButton("📄 PDF → Text", callback_data="pdf_extract"),
+        ],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
+    ])
+    await query.edit_message_text(
+        "📄 *PDF Tools*\n\n"
+        "Choose what you want to do:\n\n"
+        "📝 *Text → PDF* — Convert text into a PDF file\n"
+        "🖼️ *Image → PDF* — Convert a photo into a PDF file\n"
+        "📄 *PDF → Text* — Extract text from a PDF file",
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
+
+
+async def _menu_settings(query, ctx):
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🌐 Language",    switch_inline_query_current_chat="/lang"),
+            InlineKeyboardButton("🔐 Set PIN",     switch_inline_query_current_chat="/setpin"),
+        ],
+        [
+            InlineKeyboardButton("⏰ Reminder",    switch_inline_query_current_chat="/reminder"),
+            InlineKeyboardButton("🧹 Clear Chat",  switch_inline_query_current_chat="/clearchat"),
+        ],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
+    ])
+    await query.edit_message_text(
+        "⚙️ *Settings*\n\n"
+        "• /lang — Change language\n"
+        "• /setpin — Set a PIN lock for expenses\n"
+        "• /reminder — Set daily expense reminder\n"
+        "• /clearchat — Clear AI chat memory",
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
+
+
+async def _menu_help(query, ctx):
+    await query.edit_message_text(
+        _help_text(),
+        parse_mode="Markdown",
+        reply_markup=back_button("menu_main"),
+    )

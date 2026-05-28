@@ -35,6 +35,18 @@ from handlers.image_handler import (
     WAITING_FOR_UPSCALE_PHOTO,
 )
 from handlers.chat_handler import chat_cmd, chat_message, handle_text_message, CHATTING
+from handlers.ai_handler import (
+    chat_cmd, chat_message, handle_text_message, CHATTING,
+    translate_cmd, translate_lang_callback, translate_receive, TRANSLATE_WAIT,
+    write_cmd, write_format_callback, write_receive, WRITE_TOPIC, WRITE_CONTENT,
+    summarize_cmd, summarize_receive, SUMMARIZE_WAIT,
+    explain_cmd, explain_receive, EXPLAIN_WAIT,
+    ideas_cmd, ideas_receive, IDEAS_WAIT,
+    codehelp_cmd, code_action_callback, code_receive, CODE_WAIT,
+    ask_cmd, ask_receive, ASK_WAIT,
+    roast_cmd,
+    ai_menu_callback,
+)
 from handlers.notes_handler import (
     note_cmd, note_add_start, note_add_receive,
     note_list, note_delete_start, delete_note_callback,
@@ -278,6 +290,64 @@ def build_app():
         allow_reentry=True,
     )
 
+    translate_conv = ConversationHandler(
+        entry_points=[CommandHandler("translate", translate_cmd)],
+        states={TRANSLATE_WAIT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, translate_receive),
+            CallbackQueryHandler(translate_lang_callback, pattern=r"^tl_"),
+        ]},
+        fallbacks=fallbacks,
+        allow_reentry=True,
+    )
+
+    write_conv = ConversationHandler(
+        entry_points=[CommandHandler("write", write_cmd)],
+        states={
+            WRITE_TOPIC:   [CallbackQueryHandler(write_format_callback, pattern=r"^write_")],
+            WRITE_CONTENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, write_receive)],
+        },
+        fallbacks=fallbacks,
+        allow_reentry=True,
+    )
+
+    summarize_conv = ConversationHandler(
+        entry_points=[CommandHandler("summarize", summarize_cmd)],
+        states={SUMMARIZE_WAIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, summarize_receive)]},
+        fallbacks=fallbacks,
+        allow_reentry=True,
+    )
+
+    explain_conv = ConversationHandler(
+        entry_points=[CommandHandler("explain", explain_cmd)],
+        states={EXPLAIN_WAIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, explain_receive)]},
+        fallbacks=fallbacks,
+        allow_reentry=True,
+    )
+
+    ideas_conv = ConversationHandler(
+        entry_points=[CommandHandler("ideas", ideas_cmd)],
+        states={IDEAS_WAIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ideas_receive)]},
+        fallbacks=fallbacks,
+        allow_reentry=True,
+    )
+
+    code_conv = ConversationHandler(
+        entry_points=[CommandHandler("codehelp", codehelp_cmd)],
+        states={CODE_WAIT: [
+            CallbackQueryHandler(code_action_callback, pattern=r"^code_"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, code_receive),
+        ]},
+        fallbacks=fallbacks,
+        allow_reentry=True,
+    )
+
+    ask_conv = ConversationHandler(
+        entry_points=[CommandHandler("ask", ask_cmd)],
+        states={ASK_WAIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_receive)]},
+        fallbacks=fallbacks,
+        allow_reentry=True,
+    )
+
     upscale_conv = ConversationHandler(
         entry_points=[CommandHandler("upscale", upscale_cmd)],
         states={
@@ -372,9 +442,11 @@ def build_app():
         allow_reentry=True,
     )
 
-    for conv in [chat_conv, upscale_conv, notes_conv, add_conv, budget_conv,
+    for conv in [chat_conv, translate_conv, write_conv, summarize_conv,
+                 explain_conv, ideas_conv, code_conv, ask_conv,
+                 upscale_conv, notes_conv, add_conv, budget_conv,
                  date_conv, tag_conv, delete_conv, lang_conv, setpin_conv,
-                 reminder_conv, broadcast_conv]:
+                 reminder_conv, broadcast_conv, pdf_conv]:
         app.add_handler(conv)
 
     app.add_handler(CommandHandler("start",       start))
@@ -386,12 +458,22 @@ def build_app():
     app.add_handler(CommandHandler("compare",     compare))
     app.add_handler(CommandHandler("recurring",   recurring))
     app.add_handler(CommandHandler("ai",          ai_finance))
+    app.add_handler(CommandHandler("pdf",         pdf_cmd))
+    # ── New AI commands ──
+    app.add_handler(CommandHandler("translate",   translate_cmd))
+    app.add_handler(CommandHandler("write",       write_cmd))
+    app.add_handler(CommandHandler("summarize",   summarize_cmd))
+    app.add_handler(CommandHandler("explain",     explain_cmd))
+    app.add_handler(CommandHandler("ideas",       ideas_cmd))
+    app.add_handler(CommandHandler("codehelp",    codehelp_cmd))
+    app.add_handler(CommandHandler("ask",         ask_cmd))
+    app.add_handler(CommandHandler("roast",       roast_cmd))
     app.add_handler(CommandHandler("stats",       stats))
     app.add_handler(CommandHandler("errorlogs",   error_logs_cmd))
     app.add_handler(CommandHandler("maintenance", maintenance_toggle))
     app.add_handler(CommandHandler("restart",     restart_info))
 
-    # ── New admin commands ──
+    # ── Admin commands ──
     app.add_handler(CommandHandler("botstats",   tg_botstats))
     app.add_handler(CommandHandler("ban",        tg_ban))
     app.add_handler(CommandHandler("unban",      tg_unban))
@@ -399,13 +481,21 @@ def build_app():
     app.add_handler(CommandHandler("sendmsg",    tg_sendmsg))
     app.add_handler(CommandHandler("deleteuser", tg_deleteuser))
 
-    app.add_handler(CallbackQueryHandler(image_style_callback,     pattern=r"^imgstyle\|"))
-    app.add_handler(CallbackQueryHandler(reimagine_callback,       pattern=r"^reimagine\|"))
-    app.add_handler(CallbackQueryHandler(upscale_pending_callback, pattern=r"^upscale_pending$"))
-    app.add_handler(CallbackQueryHandler(delete_note_callback,     pattern=r"^delnote\|"))
-    app.add_handler(CallbackQueryHandler(note_callback,            pattern=r"^note_"))
-    app.add_handler(CallbackQueryHandler(menu_callback,            pattern=r"^menu_|^cancel$"))
+    app.add_handler(CallbackQueryHandler(image_style_callback,       pattern=r"^imgstyle\|"))
+    app.add_handler(CallbackQueryHandler(reimagine_callback,         pattern=r"^reimagine\|"))
+    app.add_handler(CallbackQueryHandler(upscale_pending_callback,   pattern=r"^upscale_pending$"))
+    app.add_handler(CallbackQueryHandler(delete_note_callback,       pattern=r"^delnote\|"))
+    app.add_handler(CallbackQueryHandler(note_callback,              pattern=r"^note_"))
+    app.add_handler(CallbackQueryHandler(auto_pdf_extract_callback,  pattern=r"^pdf_auto_extract$"))
+    app.add_handler(CallbackQueryHandler(pdf_callback,               pattern=r"^pdf_(text|image|extract)$"))
+    app.add_handler(CallbackQueryHandler(translate_lang_callback,    pattern=r"^tl_"))
+    app.add_handler(CallbackQueryHandler(write_format_callback,      pattern=r"^write_"))
+    app.add_handler(CallbackQueryHandler(code_action_callback,       pattern=r"^code_"))
+    app.add_handler(CallbackQueryHandler(ai_menu_callback,           pattern=r"^(menu_ai|ai_)"))
+    app.add_handler(CallbackQueryHandler(menu_callback,              pattern=r"^menu_|^cancel$"))
 
+    # Auto-detect PDF files
+    app.add_handler(MessageHandler(filters.Document.PDF, auto_pdf_detect))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     app.add_error_handler(error_handler)
 

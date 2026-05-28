@@ -46,7 +46,10 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🤖 AI Finance",     callback_data="menu_ai_finance"),
         ],
         [
+            InlineKeyboardButton("📄 PDF Tools",      callback_data="menu_pdf"),
             InlineKeyboardButton("⚙️ Settings",       callback_data="menu_settings"),
+        ],
+        [
             InlineKeyboardButton("❓ Help",            callback_data="menu_help"),
         ],
     ])
