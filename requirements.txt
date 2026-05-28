@@ -10,3 +10,5 @@ numpy>=1.24.0
 
 # Already present but confirm:
 Pillow>=10.0.0
+# `npython-telegram-bot>=20.0
+python-telegram-bot[job-queue]>=20.0
