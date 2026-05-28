@@ -13,4 +13,18 @@ Pillow>=10.0.0
 # `npython-telegram-bot>=20.0
 python-telegram-bot[job-queue]>=20.0
 python-dotenv>=1.0.0
+psycopg[binary]>=3.0.0# Core bot
+python-telegram-bot[job-queue]>=20.0
+python-dotenv>=1.0.0
 psycopg[binary]>=3.0.0
+Pillow>=10.0.0
+
+# Upscale stack
+torch>=2.0.0
+torchvision>=0.15.0
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+facexlib>=0.3.0
+gfpgan>=1.3.8
+basicsr @ git+https://github.com/xinntao/BasicSR.git@master
+realesrgan @ git+https://github.com/xinntao/Real-ESRGAN.git@master
