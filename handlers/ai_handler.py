@@ -17,7 +17,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from config import GROQ_API_KEY, AI_CHAT_MEMORY
-from database import ensure_user, get_chat_memory, save_chat_memory, clear_chat_memory
+from database import ensure_user, get_chat_history, save_chat_message, clear_chat_history
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ async def chat_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     thinking = await update.message.reply_text("🤔 Thinking...")
 
     # Load memory
-    history = get_chat_memory(uid, limit=AI_CHAT_MEMORY)
+    history = get_chat_history(uid, limit=AI_CHAT_MEMORY)
     history.append({"role": "user", "content": user_text})
 
     system = (
@@ -108,8 +108,8 @@ async def chat_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     reply = _groq_chat(history, system=system)
 
     # Save to memory
-    save_chat_memory(uid, "user", user_text)
-    save_chat_memory(uid, "assistant", reply)
+    save_chat_message(uid, "user", user_text)
+    save_chat_message(uid, "assistant", reply)
 
     kb = InlineKeyboardMarkup([
         [
@@ -129,12 +129,12 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     # If short/casual, respond as AI
-    history = get_chat_memory(uid, limit=6)
+    history = get_chat_history(uid, limit=6)
     history.append({"role": "user", "content": text})
     system = "You are a friendly Telegram bot assistant. Be brief and helpful."
     reply = _groq_chat(history, system=system, max_tokens=512)
-    save_chat_memory(uid, "user", text)
-    save_chat_memory(uid, "assistant", reply)
+    save_chat_message(uid, "user", text)
+    save_chat_message(uid, "assistant", reply)
 
     await update.message.reply_text(reply)
 
@@ -558,7 +558,7 @@ async def ai_menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "menu_ai":
         await _show_ai_menu(query)
     elif data == "ai_clearchat":
-        clear_chat_memory(query.from_user.id)
+        clear_chat_history(query.from_user.id)
         await query.edit_message_text(
             "🧹 *Chat memory cleared!*\n\nSend /chat to start fresh.",
             parse_mode="Markdown",
