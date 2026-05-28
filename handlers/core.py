@@ -70,6 +70,9 @@ def _help_text() -> str:
         "  📄 PDF → Text\n\n"
         "━━━ 📝 *Notes* ━━━\n"
         "/note — Manage notes\n\n"
+        "━━━ 🗓 *Khmer Calendar* ━━━\n"
+        "/calendar — ប្រតិទិនខ្មែរ\n"
+        "  📅 Today • 🌙 Lunar • 🎉 Holidays • 🔄 Convert\n\n"
         "━━━ ⚙️ *Settings* ━━━\n"
         "/lang — Change language\n"
         "/setpin — Set PIN lock\n"
@@ -127,6 +130,7 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "menu_pdf":        _menu_pdf,
         "menu_settings":   _menu_settings,
         "menu_help":       _menu_help,
+        "menu_calendar":   _menu_calendar,
     }
 
     fn = handlers.get(data)
@@ -326,4 +330,32 @@ async def _menu_help(query, ctx):
         _help_text(),
         parse_mode="Markdown",
         reply_markup=back_button("menu_main"),
+    )
+
+
+async def _menu_calendar(query, ctx):
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📅 ថ្ងៃនេះ",        callback_data="kcal_today"),
+            InlineKeyboardButton("🌙 ច័ន្ទគតិ",        callback_data="kcal_lunar"),
+        ],
+        [
+            InlineKeyboardButton("🎉 បុណ្យ & ថ្ងៃឈប់", callback_data="kcal_holidays"),
+            InlineKeyboardButton("🔄 បំប្លែង",         callback_data="kcal_convert"),
+        ],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
+    ])
+    await query.edit_message_text(
+        "🗓 *ប្រតិទិនខ្មែរ — Khmer Calendar*
+
+"
+        "📅 *Today* — Today\'s Khmer date & Buddhist Era
+"
+        "🌙 *Lunar* — 7-day lunar calendar view
+"
+        "🎉 *Holidays* — Upcoming festivals & public holidays
+"
+        "🔄 *Convert* — Gregorian ↔ Buddhist Era",
+        parse_mode="Markdown",
+        reply_markup=kb,
     )
