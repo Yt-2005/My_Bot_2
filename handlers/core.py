@@ -340,17 +340,24 @@ async def _menu_calendar(query, ctx):
             InlineKeyboardButton("🌙 ច័ន្ទគតិ",        callback_data="kcal_lunar"),
         ],
         [
-            InlineKeyboardButton("🎉 បុណ្យ & ថ្ងៃឈប់", callback_data="kcal_holidays"),
-            InlineKeyboardButton("🔄 បំប្លែង",         callback_data="kcal_convert"),
+            InlineKeyboardButton("📆 ប្រតិទិនខែ",      callback_data="kcal_month_now"),
+            InlineKeyboardButton("🙏 ថ្ងៃសីល",         callback_data="kcal_seil"),
         ],
-        [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
+        [
+            InlineKeyboardButton("🎉 បុណ្យ & ថ្ងៃឈប់",  callback_data="kcal_holidays"),
+            InlineKeyboardButton("🔄 បំប្លែង",          callback_data="kcal_convert"),
+        ],
+        [InlineKeyboardButton("🔙 ត្រឡប់ម៉ឺនុយ",       callback_data="menu_main")],
     ])
     await query.edit_message_text(
-        "🗓 *ប្រតិទិនខ្មែរ — Khmer Calendar*\n\n"
-        "📅 *Today* — Today's Khmer date & Buddhist Era\n"
-        "🌙 *Lunar* — 7-day lunar calendar view\n"
-        "🎉 *Holidays* — Upcoming festivals & public holidays\n"
-        "🔄 *Convert* — Gregorian ↔ Buddhist Era",
+        "🗓  *ប្រតិទិនខ្មែរ*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📅  *ថ្ងៃនេះ* — កាលបរិច្ឆេទខ្មែរ & ព.ស.\n"
+        "🌙  *ច័ន្ទគតិ* — ប្រតិទិន ៧ ថ្ងៃ\n"
+        "📆  *ប្រតិទិនខែ* — ប្រតិទិនពេញខែ\n"
+        "🙏  *ថ្ងៃសីល* — ថ្ងៃប្រតិបត្តិធម៌\n"
+        "🎉  *បុណ្យ & ថ្ងៃឈប់* — ខ្មែរ & ជាតិ\n"
+        "🔄  *បំប្លែង* — ព.ស. ↔ គ.ស.",
         parse_mode="Markdown",
         reply_markup=kb,
     )
