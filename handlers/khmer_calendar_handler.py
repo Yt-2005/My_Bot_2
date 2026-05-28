@@ -766,41 +766,66 @@ async def khmer_calendar_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
 # ══════════════════════════════════════════════
 # CONVERSION: receive user input
 # ══════════════════════════════════════════════
+def _parse_date_input(text: str) -> date:
+    """
+    Robustly parse user date input. Accepts:
+      DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY  (day-first, any separator)
+      YYYY/MM/DD, YYYY-MM-DD              (ISO, any separator)
+      BE YYYY / ព.ស. YYYY                 → raises ValueError("BE") to signal BE mode
+    Strips whitespace and normalises separators before parsing.
+    """
+    import re
+    t = text.strip()
+
+    # ── Buddhist Era shorthand ──────────────────────────────────────────────────
+    be_pat = re.match(r'^(?:BE|ព\.ស\.?)\s*(\d{4})$', t, re.IGNORECASE)
+    if be_pat:
+        raise ValueError(f"BE:{be_pat.group(1)}")
+
+    # Normalise separators → "/"
+    t = re.sub(r'[\-\. ]+', '/', t)
+
+    parts = t.split('/')
+    if len(parts) != 3:
+        raise ValueError("Invalid format: expected 3 parts separated by / - . or space")
+
+    p = [p.strip() for p in parts]
+
+    # Determine order: YYYY/MM/DD (ISO) vs DD/MM/YYYY
+    if len(p[0]) == 4 and int(p[0]) > 31:
+        # ISO order
+        year, month, day = int(p[0]), int(p[1]), int(p[2])
+    else:
+        day, month, year = int(p[0]), int(p[1]), int(p[2])
+        # Handle 2-digit year (e.g. 25 → 2025)
+        if year < 100:
+            year += 2000
+
+    return date(year, month, day)
+
+
 async def calendar_convert_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     try:
-        if "/" in text and not text.startswith("/"):
-            parts = text.split("/")
-            if len(parts) == 3:
-                day, month, year = int(parts[0]), int(parts[1]), int(parts[2])
-                d = date(year, month, day)
-                era = gregorian_to_khmer_era(d)
-                lunar = gregorian_to_lunar(d)
-                zodiac = get_zodiac_year(era["buddhist_era"])
-                weekday_kh = KHMER_WEEKDAYS[d.weekday()]
-                month_kh = KHMER_MONTHS[d.month]
-                seil_note = "\n🙏  *ថ្ងៃសីល* — ថ្ងៃប្រតិបត្តិធម៌" if lunar["is_seil"] else ""
-                holiday = get_today_holiday(d)
-                holiday_note = f"\n{holiday['emoji']}  *{holiday['name']}*" if holiday else ""
-
-                result = (
-                    f"🔄  *លទ្ធផលបំប្លែង*\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"🗓  *គ.ស.* {to_khmer_num(day)} {month_kh} {to_khmer_num(year)}\n"
-                    f"    {weekday_kh}\n\n"
-                    f"☸️  *ព.ស.* {to_khmer_num(era['buddhist_era'])}\n"
-                    f"    ឆ្នាំ{zodiac}\n\n"
-                    f"{lunar['moon_emoji']}  *ច័ន្ទគតិ* {lunar['day']} {lunar['month']}\n"
-                    f"    {lunar['phase']}"
-                    f"{seil_note}"
-                    f"{holiday_note}"
-                )
+        # ── Try parsing ─────────────────────────────────────────────────────────
+        try:
+            d = _parse_date_input(text)
+            be_mode = False
+            be_year_val = None
+        except ValueError as ve:
+            msg = str(ve)
+            if msg.startswith("BE:"):
+                be_mode = True
+                be_year_val = int(msg.split(":")[1])
             else:
-                raise ValueError("Invalid format")
+                raise ValueError(msg)
 
-        elif text.upper().startswith("BE"):
-            be_year = int(text.upper().replace("BE", "").strip())
+        # ── BE → Gregorian approximate ──────────────────────────────────────────
+        if be_mode:
+            be_year = be_year_val
+            if be_year < 1000 or be_year > 3000:
+                raise ValueError("BE year out of range (1000–3000)")
             greg_year_approx = be_year - 544
             zodiac = get_zodiac_year(be_year)
 
@@ -813,8 +838,30 @@ async def calendar_convert_receive(update: Update, ctx: ContextTypes.DEFAULT_TYP
                 f"    មករា–មេសា {to_khmer_num(greg_year_approx)}\n"
                 f"    មេសា–ធ្នូ {to_khmer_num(greg_year_approx + 1)}"
             )
+
+        # ── Gregorian → Khmer ───────────────────────────────────────────────────
         else:
-            raise ValueError("Unrecognized format")
+            era = gregorian_to_khmer_era(d)
+            lunar = gregorian_to_lunar(d)
+            zodiac = get_zodiac_year(era["buddhist_era"])
+            weekday_kh = KHMER_WEEKDAYS[d.weekday()]
+            month_kh = KHMER_MONTHS[d.month]
+            seil_note = "\n🙏  *ថ្ងៃសីល* — ថ្ងៃប្រតិបត្តិធម៌" if lunar["is_seil"] else ""
+            holiday = get_today_holiday(d)
+            holiday_note = f"\n{holiday['emoji']}  *{holiday['name']}*" if holiday else ""
+
+            result = (
+                f"🔄  *លទ្ធផលបំប្លែង*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"🗓  *គ.ស.* {to_khmer_num(d.day)} {month_kh} {to_khmer_num(d.year)}\n"
+                f"    {weekday_kh}\n\n"
+                f"☸️  *ព.ស.* {to_khmer_num(era['buddhist_era'])}\n"
+                f"    ឆ្នាំ{zodiac}\n\n"
+                f"{lunar['moon_emoji']}  *ច័ន្ទគតិ* {lunar['day']} {lunar['month']}\n"
+                f"    {lunar['phase']}"
+                f"{seil_note}"
+                f"{holiday_note}"
+            )
 
         await update.message.reply_text(
             result,
