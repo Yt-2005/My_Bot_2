@@ -8,7 +8,8 @@ Features:
 """
 
 import logging
-from datetime import datetime, date
+import math
+from datetime import datetime, date, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 
@@ -243,6 +244,282 @@ def format_today_khmer(d: date = None) -> str:
     return text
 
 
+
+
+# ══════════════════════════════════════════════
+# SHABBAT TIME CALCULATOR (Phnom Penh, Cambodia)
+# ══════════════════════════════════════════════
+# Phnom Penh coordinates: 11.5564° N, 104.9282° E
+# UTC+7
+
+_PP_LAT  = 11.5564
+_PP_LNG  = 104.9282
+_PP_UTC  = 7        # UTC offset hours
+
+
+def _sun_time(d: date, lat: float, lng: float, utc_offset: int, rising: bool) -> datetime:
+    """
+    Sunrise/sunset via Spencer/NOAA simplified algorithm.
+    Returns a timezone-naive datetime in local time.
+    """
+    day_of_year = d.timetuple().tm_yday
+    # Solar declination
+    B = math.radians(360 / 365 * (day_of_year - 81))
+    decl = math.radians(23.45 * math.sin(B))
+    lat_r = math.radians(lat)
+    # Hour angle at sunrise/sunset (cos HA = -tan(lat)*tan(decl))
+    cos_ha = -math.tan(lat_r) * math.tan(decl)
+    cos_ha = max(-1.0, min(1.0, cos_ha))
+    ha = math.degrees(math.acos(cos_ha))
+    # Equation of time (minutes)
+    eot = 9.87 * math.sin(2 * B) - 7.53 * math.cos(B) - 1.5 * math.sin(B)
+    # Solar noon in local time
+    noon_local = 12 - (lng - utc_offset * 15) / 15 - eot / 60
+    if rising:
+        t = noon_local - ha / 15
+    else:
+        t = noon_local + ha / 15
+    h = int(t)
+    m = int((t - h) * 60)
+    s = int(((t - h) * 60 - m) * 60)
+    return datetime(d.year, d.month, d.day, h, m, s)
+
+
+def get_shabbat_times(d: date) -> dict | None:
+    """
+    Given any date, return the Shabbat times for the Friday–Saturday that
+    contains or immediately follows that date.
+    Returns a dict with friday_date, saturday_date, candle_lighting (18 min before sunset Fri),
+    havdalah (42 min after sunset Sat), sunset_fri, sunset_sat.
+    Returns None if d is Sunday and next Friday is > 6 days away (shouldn't happen).
+    """
+    weekday = d.weekday()  # 0=Mon … 4=Fri, 5=Sat, 6=Sun
+    days_to_friday = (4 - weekday) % 7
+    friday = d + timedelta(days=days_to_friday)
+    saturday = friday + timedelta(days=1)
+
+    sunset_fri = _sun_time(friday, _PP_LAT, _PP_LNG, _PP_UTC, rising=False)
+    sunset_sat = _sun_time(saturday, _PP_LAT, _PP_LNG, _PP_UTC, rising=False)
+    candle = sunset_fri - timedelta(minutes=18)
+    havdalah = sunset_sat + timedelta(minutes=42)
+
+    return {
+        "friday": friday,
+        "saturday": saturday,
+        "candle_lighting": candle,
+        "shabbat_start": sunset_fri,
+        "shabbat_end": sunset_sat,
+        "havdalah": havdalah,
+    }
+
+
+def format_shabbat_block(st: dict) -> str:
+    """Format a Shabbat times block in Khmer + English."""
+    fri = st["friday"]
+    sat = st["saturday"]
+    fri_kh = f"{to_khmer_num(fri.day)} {KHMER_MONTHS[fri.month]} {to_khmer_num(fri.year)}"
+    sat_kh = f"{to_khmer_num(sat.day)} {KHMER_MONTHS[sat.month]} {to_khmer_num(sat.year)}"
+    dur_total = int((st["shabbat_end"] - st["shabbat_start"]).total_seconds())
+    dur_h = dur_total // 3600
+    dur_m = (dur_total % 3600) // 60
+    return (
+        "✡️ *ពេលវេលា Shabbat — ភ្នំពេញ*\n\n"
+        "🕯️ *ចំហេរទៀន (Candle Lighting)*\n"
+        f"  សុក្រ {fri_kh}\n"
+        f"  ម៉ោង {st['candle_lighting'].strftime('%H:%M')} (18 នាទី មុន ថ្ងៃលិច)\n\n"
+        "🌅 *ថ្ងៃលិច សុក្រ (Shabbat Begins)*\n"
+        f"  ម៉ោង {st['shabbat_start'].strftime('%H:%M')}\n\n"
+        "🌆 *ថ្ងៃលិច សៅរ៍ (Shabbat Ends — Havdalah)*\n"
+        f"  សៅរ៍ {sat_kh}\n"
+        f"  ម៉ោង {st['havdalah'].strftime('%H:%M')} (42 នាទី ក្រោយ ថ្ងៃលិច)\n\n"
+        f"⏱ Shabbat duration: {dur_h}h {dur_m}m"
+    )
+
+
+# ══════════════════════════════════════════════
+# FULL MONTH CALENDAR VIEW  (matches khmer-lunar-calendar.com layout)
+# ══════════════════════════════════════════════
+def _sunset_pp(d: date) -> str:
+    """Sunset time for Phnom Penh (11.56N, 104.93E, UTC+7)."""
+    doy = d.timetuple().tm_yday
+    B = math.radians(360 / 365 * (doy - 81))
+    decl = math.radians(23.45 * math.sin(B))
+    lat_r = math.radians(11.5564)
+    cos_ha = max(-1.0, min(1.0, -math.tan(lat_r) * math.tan(decl)))
+    ha = math.degrees(math.acos(cos_ha))
+    eot = 9.87 * math.sin(2 * B) - 7.53 * math.cos(B) - 1.5 * math.sin(B)
+    noon = 12 - (104.9282 - 7 * 15) / 15 - eot / 60
+    t = noon + ha / 15
+    hh = int(t)
+    mm = int((t - hh) * 60)
+    return f"{hh}:{mm:02d}"
+
+
+def _add_minutes(time_str: str, minutes: int) -> str:
+    hh, mm = map(int, time_str.split(":"))
+    total = hh * 60 + mm + minutes
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def format_month_calendar(year: int, month: int) -> str:
+    """
+    Full month calendar matching khmer-lunar-calendar.com layout:
+    - Header: Gregorian month + Khmer BE year + Zodiac
+    - 7-column grid (អាទិ ចន្ទ អង្គារ ពុធ ព្រហ សុក្រ សៅរ៍)
+    - Each cell: Gregorian day + Khmer lunar day + event label
+    - Right panel: ordered event list for the month
+    """
+    import calendar as cal_mod
+
+    holidays_map = {
+        h["date"].day: h
+        for h in get_khmer_holidays(year)
+        if h["date"].month == month
+    }
+
+    month_kh = KHMER_MONTHS[month]
+    era = gregorian_to_khmer_era(date(year, month, 1))
+    be_year = era["buddhist_era"]
+    zodiac = get_zodiac_year(be_year)
+    today = date.today()
+
+    # ── Header ────────────────────────────────
+    header = (
+        f"📅 *{month_kh} {to_khmer_num(year)}*\n"
+        f"ព.ស.{to_khmer_num(be_year)} • ឆ្នាំ{zodiac}\n"
+    )
+
+    # ── Weekday row (Sun-first, matching reference site) ──────────────────────
+    # site order: អាទិ ចន្ទ អង្គារ ពុធ ព្រហ សុក្រ សៅរ៍
+    # Python weekday(): 0=Mon … 6=Sun  →  Sun=6
+    # We rotate so Sunday is col 0
+    WD_HEADER = "អា | ចន | អ  | ព  | ព  | សុ | សៅ"
+    SEP       = "───┼───┼───┼───┼───┼───┼───"
+
+    # first_weekday from monthrange is Mon=0; convert to Sun=0
+    first_wd_mon, num_days = cal_mod.monthrange(year, month)
+    first_wd_sun = (first_wd_mon + 1) % 7  # shift: Mon→1, Sun→0
+
+    row_cells = ["   "] * first_wd_sun
+    week_rows = []
+
+    for day_num in range(1, num_days + 1):
+        d = date(year, month, day_num)
+        lunar = gregorian_to_lunar(d)
+        ld = lunar["day_num"]
+        wd_sun = (d.weekday() + 1) % 7  # Sun=0, Mon=1 … Sat=6
+
+        is_today    = (d == today)
+        is_holiday  = day_num in holidays_map
+        is_friday   = (wd_sun == 5)
+        is_saturday = (wd_sun == 6)
+        is_sunday   = (wd_sun == 0)
+        is_full_moon = (ld == 15)
+        is_new_moon  = (ld == 1)
+
+        # Suffix: today marker > holiday > moon phases > shabbat
+        if is_today:
+            suffix = "◉"
+        elif is_holiday:
+            suffix = "★"
+        elif is_full_moon:
+            suffix = "●"
+        elif is_new_moon:
+            suffix = "○"
+        elif is_friday or is_saturday:
+            suffix = "✡"
+        else:
+            suffix = " "
+
+        cell = f"{day_num:2}{suffix}"
+        row_cells.append(cell)
+
+        if wd_sun == 6 or day_num == num_days:
+            # pad last row
+            while len(row_cells) < 7:
+                row_cells.append("   ")
+            week_rows.append(" | ".join(row_cells))
+            row_cells = []
+
+    # ── Event list (right panel equivalent, listed below grid) ───────────────
+    events = []
+    for day_num in sorted(holidays_map):
+        h = holidays_map[day_num]
+        d = date(year, month, day_num)
+        lunar = gregorian_to_lunar(d)
+        wday_kh = KHMER_WEEKDAYS[d.weekday()]
+        events.append(
+            f"  {h['emoji']} *{to_khmer_num(day_num)} {month_kh}* ({wday_kh})\n"
+            f"     {h['name']}\n"
+            f"     _{lunar['day']} {lunar['month']}_"
+        )
+
+    # Shabbat entries
+    for day_num in range(1, num_days + 1):
+        d = date(year, month, day_num)
+        wd_sun = (d.weekday() + 1) % 7
+        if wd_sun == 5:  # Friday
+            ss = _sunset_pp(d)
+            cl = _add_minutes(ss, -18)
+            lunar = gregorian_to_lunar(d)
+            events.append(
+                f"  ✡ *{to_khmer_num(day_num)} {month_kh}* (សុក្រ) — Shabbat\n"
+                f"     🕯️ ចំហេរទៀន: {cl}  🌅 ថ្ងៃលិច: {ss}\n"
+                f"     _{lunar['day']} {lunar['month']}_"
+            )
+        elif wd_sun == 6:  # Saturday
+            ss = _sunset_pp(d)
+            hv = _add_minutes(ss, 42)
+            lunar = gregorian_to_lunar(d)
+            events.append(
+                f"  ✡ *{to_khmer_num(day_num)} {month_kh}* (សៅរ៍) — Havdalah {hv}\n"
+                f"     _{lunar['day']} {lunar['month']}_"
+            )
+
+    events.sort(key=lambda x: int(''.join(filter(str.isdigit, x.split('*')[1].split(month_kh)[0].strip())) or '0'))
+
+    # ── Assemble ──────────────────────────────
+    grid_lines = [WD_HEADER, SEP] + week_rows
+    body = "\n".join(grid_lines)
+
+    legend = (
+        "◉ ថ្ងៃនេះ  ★ ថ្ងៃបុណ្យ  ● ព្រះច័ន្ទពេញ  ○ ខែថ្មី  ✡ Shabbat"
+    )
+
+    result = header + "```\n" + body + "\n```\n" + legend
+
+    if events:
+        result += "\n\n*━━ ព្រឹត្តិការណ៍ខែនេះ ━━*\n" + "\n\n".join(events)
+
+    return result
+
+
+def month_nav_keyboard(year: int, month: int) -> InlineKeyboardMarkup:
+    """Inline keyboard for month view with prev/next navigation."""
+    prev_month = month - 1
+    prev_year = year
+    if prev_month < 1:
+        prev_month = 12
+        prev_year -= 1
+
+    next_month = month + 1
+    next_year = year
+    if next_month > 12:
+        next_month = 1
+        next_year += 1
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⬅️ មុន", callback_data=f"kcal_month_{prev_year}_{prev_month:02d}"),
+            InlineKeyboardButton("📆 ខែនេះ",  callback_data=f"kcal_month_{date.today().year}_{date.today().month:02d}"),
+            InlineKeyboardButton("បន្ទាប់ ➡️", callback_data=f"kcal_month_{next_year}_{next_month:02d}"),
+        ],
+        [
+            InlineKeyboardButton("✡️ Shabbat", callback_data="kcal_shabbat"),
+            InlineKeyboardButton("🔙 ត្រឡប់", callback_data="kcal_menu"),
+        ],
+    ])
+
 # ══════════════════════════════════════════════
 # MENUS
 # ══════════════════════════════════════════════
@@ -250,6 +527,10 @@ CALENDAR_MENU_KB = InlineKeyboardMarkup([
     [
         InlineKeyboardButton("📅 ថ្ងៃនេះ",       callback_data="kcal_today"),
         InlineKeyboardButton("🌙 ច័ន្ទគតិ",       callback_data="kcal_lunar"),
+    ],
+    [
+        InlineKeyboardButton("📆 ប្រតិទិនខែ",     callback_data="kcal_month_now"),
+        InlineKeyboardButton("✡️ Shabbat",        callback_data="kcal_shabbat"),
     ],
     [
         InlineKeyboardButton("🎉 បុណ្យ & ថ្ងៃឈប់", callback_data="kcal_holidays"),
@@ -263,6 +544,8 @@ CALENDAR_MENU_TEXT = (
     "ជ្រើសរើសសកម្មភាព:\n\n"
     "📅 *ថ្ងៃនេះ* — មើលកាលបរិច្ឆេទខ្មែរថ្ងៃនេះ\n"
     "🌙 *ច័ន្ទគតិ* — ប្រតិទិនខ្មែរតាមច័ន្ទ\n"
+    "📆 *ប្រតិទិនខែ* — មើលប្រតិទិនពេញមួយខែ\n"
+    "✡️ *Shabbat* — ពេលវេលា Shabbat ភ្នំពេញ\n"
     "🎉 *បុណ្យ & ថ្ងៃឈប់* — បុណ្យជាតិ និងព្រឹត្តិការណ៍\n"
     "🔄 *បំប្លែងកាលបរិច្ឆេទ* — បំប្លែង ព.ស. ↔ គ.ស."
 )
@@ -319,6 +602,50 @@ async def khmer_calendar_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
             + "\n".join(lines) +
             f"\n\n{lunar['phase']}"
         )
+        await query.edit_message_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 ត្រឡប់", callback_data="kcal_menu"),
+            ]]),
+        )
+
+    elif data == "kcal_month_now":
+        today = date.today()
+        text = format_month_calendar(today.year, today.month)
+        await query.edit_message_text(
+            f"```\n{text}\n```",
+            parse_mode="Markdown",
+            reply_markup=month_nav_keyboard(today.year, today.month),
+        )
+
+    elif data.startswith("kcal_month_"):
+        # kcal_month_YYYY_MM
+        parts = data.split("_")
+        year_m, month_m = int(parts[2]), int(parts[3])
+        text = format_month_calendar(year_m, month_m)
+        await query.edit_message_text(
+            f"```\n{text}\n```",
+            parse_mode="Markdown",
+            reply_markup=month_nav_keyboard(year_m, month_m),
+        )
+
+    elif data == "kcal_shabbat":
+        today = date.today()
+        st = get_shabbat_times(today)
+        text = format_shabbat_block(st)
+        # Also show next 4 Shabbats
+        extra = ["\n\n📋 *Shabbat ៤ សប្ដាហ៍ខាងមុខ:*"]
+        for w in range(1, 5):
+            future = today + timedelta(weeks=w)
+            st2 = get_shabbat_times(future)
+            fri_str = f"{to_khmer_num(st2['friday'].day)} {KHMER_MONTHS[st2['friday'].month]}"
+            sat_str = f"{to_khmer_num(st2['saturday'].day)} {KHMER_MONTHS[st2['saturday'].month]}"
+            extra.append(
+                f"  🕯️ {fri_str} ម៉ោង{st2['candle_lighting'].strftime('%H:%M')} → "
+                f"✡️ {sat_str} ម៉ោង{st2['havdalah'].strftime('%H:%M')}"
+            )
+        text += "\n".join(extra)
         await query.edit_message_text(
             text,
             parse_mode="Markdown",
