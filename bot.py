@@ -34,7 +34,6 @@ from handlers.image_handler import (
     upscale_cmd, upscale_photo_received, upscale_pending_callback,
     WAITING_FOR_UPSCALE_PHOTO,
 )
-from handlers.chat_handler import chat_cmd, chat_message, handle_text_message, CHATTING
 from handlers.ai_handler import (
     chat_cmd, chat_message, handle_text_message, CHATTING,
     translate_cmd, translate_lang_callback, translate_receive, TRANSLATE_WAIT,
@@ -76,6 +75,12 @@ from handlers.admin_handler import (
     stats, error_logs_cmd, maintenance_toggle,
     broadcast_start, broadcast_send, restart_info,
     BROADCAST_MSG,
+)
+from handlers.pdf_handler import (
+    pdf_cmd, pdf_callback,
+    pdf_receive_text, pdf_receive_file,
+    auto_pdf_detect, auto_pdf_extract_callback,
+    WAITING_PDF_TEXT, WAITING_PDF_IMAGE,
 )
 
 # ── NEW: Extra admin commands callable from Telegram ──
@@ -438,6 +443,16 @@ def build_app():
     broadcast_conv = ConversationHandler(
         entry_points=[CommandHandler("broadcast", broadcast_start)],
         states={BROADCAST_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_send)]},
+        fallbacks=fallbacks,
+        allow_reentry=True,
+    )
+
+    pdf_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(pdf_callback, pattern=r"^pdf_(text|image|extract)$")],
+        states={
+            WAITING_PDF_TEXT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, pdf_receive_text)],
+            WAITING_PDF_IMAGE: [MessageHandler(filters.PHOTO | filters.Document.ALL, pdf_receive_file)],
+        },
         fallbacks=fallbacks,
         allow_reentry=True,
     )
