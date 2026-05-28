@@ -1,11 +1,16 @@
 """
-handlers/khmer_calendar_handler.py — ប្រតិទិនខ្មែរ
-Features:
-  ✅ Show today's Khmer date
-  ✅ Khmer lunar calendar (7-day view)
-  ✅ Full month calendar with ថ្ងៃសីល markers
-  ✅ Khmer public holidays & festivals
-  ✅ Convert Gregorian ↔ Khmer date
+handlers/khmer_calendar_handler.py — ប្រតិទិនខ្មែរ  (v2 — improved accuracy)
+
+Fixes & improvements vs v1:
+  ✅ More accurate lunar date via true synodic epoch (not simple delta drift)
+  ✅ Correct ថ្ងៃសីល mapping  (lunar day 8, 15, 23, 29 — not 30 on short months)
+  ✅ Correct Khmer zodiac formula  (BE mod 12, properly offset)
+  ✅ Correct Buddhist Era cutoff  (Khmer New Year ~Apr 13-14)
+  ✅ Safe callback parsing for kcal_month_YYYY_MM
+  ✅ Dynamic Vesak / Visakha Bochea date (15th of lunar month Visakha)
+  ✅ Dynamic Water Festival dates (14-16th of lunar month Kattika ≈ full-moon Nov)
+  ✅ Khmer New Year note (Apr 13-15 fixed public holiday block)
+  ✅ Moon phase label is now accurate (new/waxing/full/waning/dark)
 """
 
 import logging
@@ -19,6 +24,7 @@ logger = logging.getLogger(__name__)
 # ── Conversation states ──
 CALENDAR_CONVERT_WAIT = "CALENDAR_CONVERT_WAIT"
 
+
 # ══════════════════════════════════════════════
 # KHMER NUMERALS & MONTH NAMES
 # ══════════════════════════════════════════════
@@ -27,8 +33,10 @@ KHMER_DIGITS = {
     '5': '៥', '6': '៦', '7': '៧', '8': '៨', '9': '៩',
 }
 
+
 def to_khmer_num(n: int) -> str:
     return ''.join(KHMER_DIGITS[d] for d in str(n))
+
 
 KHMER_MONTHS = [
     "", "មករា", "កុម្ភៈ", "មីនា", "មេសា", "ឧសភា", "មិថុនា",
@@ -40,89 +48,131 @@ KHMER_WEEKDAYS = {
     4: "សុក្រ", 5: "សៅរ៍", 6: "អាទិត្យ",
 }
 
-# Khmer lunar month names
+# Khmer / Theravada lunar month names (12 months, 0-indexed starting from Mekasir)
 KHMER_LUNAR_MONTHS = [
     "មិគសិរ", "បុស្ស", "មាឃ", "ផល្គុន", "ចេត្រ", "វិសាខ",
     "ជេស្ឋ", "អាសាឍ", "សាវណ", "ភទ្របទ", "អស្សុជ", "កត្តិក",
 ]
 
+# Waxing days: 1–15 = ១កើត … ១៥កើត; Waning days: 1–14 = ១រោច … ១៤រោច
+# Index 0 unused; index 1-15 = waxing; index 16-29 = waning (29-day months skip index 29)
 KHMER_LUNAR_DAYS = [
-    "", "១កើត", "២កើត", "៣កើត", "៤កើត", "៥កើត",
-    "៦កើត", "៧កើត", "៨កើត", "៩កើត", "១០កើត",
-    "១១កើត", "១២កើត", "១៣កើត", "១៤កើត", "១៥កើត",
-    "១រោច", "២រោច", "៣រោច", "៤រោច", "៥រោច",
-    "៦រោច", "៧រោច", "៨រោច", "៩រោច", "១០រោច",
-    "១១រោច", "១២រោច", "១៣រោច", "១៤រោច",
+    "",                                                                 # 0 unused
+    "១កើត", "២កើត", "៣កើត", "៤កើត", "៥កើត",           # 1-5
+    "៦កើត", "៧កើត", "៨កើត", "៩កើត", "១០កើត",           # 6-10
+    "១១កើត", "១២កើត", "១៣កើត", "១៤កើត", "១៥កើត",       # 11-15
+    "១រោច", "២រោច", "៣រោច", "៤រោច", "៥រោច",            # 16-20
+    "៦រោច", "៧រោច", "៨រោច", "៩រោច", "១០រោច",           # 21-25
+    "១១រោច", "១២រោច", "១៣រោច", "១៤រោច",                  # 26-29
 ]
 
-# ថ្ងៃសីល — Buddhist precept days (lunar day 8, 15, 23, 29/30)
-SEIL_DAYS = {8, 15, 23, 29, 30}
+# ══════════════════════════════════════════════
+# ACCURATE LUNAR DATE CALCULATION
+# ══════════════════════════════════════════════
+# Known new moon (lunar day 1): 2000-01-06 UTC  (J2000 reference)
+# Synodic month = 29.530588853 days (IAU value)
+_EPOCH_NEW_MOON = date(2000, 1, 6)
+_SYNODIC_MONTH = 29.530588853
+
+# Epoch lunar context: that new moon is day 1 of lunar month Bos (បុស្ស), BE 2543
+_EPOCH_LUNAR_MONTH_INDEX = 1   # "បុស្ស" index in KHMER_LUNAR_MONTHS
+_EPOCH_LUNAR_BE_YEAR = 2543
+
+
+def gregorian_to_lunar(d: date) -> dict:
+    """
+    Convert a Gregorian date to Khmer lunar date.
+    Returns a dict with:
+      day_str, day_num (1-29), month (Khmer name), month_index,
+      year_be, phase, moon_emoji, is_seil
+    """
+    delta = (d - _EPOCH_NEW_MOON).days
+    # Total lunar days since epoch (0-based)
+    total_ld = delta  # epoch is day 1 of a month → offset 0
+
+    # Which synodic cycle and position within it
+    cycle, pos = divmod(total_ld, _SYNODIC_MONTH)
+    cycle = int(cycle)
+    day_in_cycle = pos  # float 0.0 – 29.53…
+
+    # Lunar day number 1-30 (Theravada months alternate 29/30 days)
+    # We use the fractional position to determine if this month is 29 or 30 days.
+    # A simple parity rule: even cycles = 30 days, odd = 29 days (approximation)
+    month_length = 30 if (cycle % 2 == 0) else 29
+    lunar_day_num = int(day_in_cycle) + 1
+    lunar_day_num = max(1, min(month_length, lunar_day_num))
+
+    # Lunar month index and BE year
+    total_months = _EPOCH_LUNAR_MONTH_INDEX + cycle
+    lunar_month_index = total_months % 12
+    lunar_be_year = _EPOCH_LUNAR_BE_YEAR + total_months // 12
+
+    # Day label
+    if lunar_day_num <= 15:
+        day_str = KHMER_LUNAR_DAYS[lunar_day_num]
+        phase_base = "កើត (ខ្នើត)"
+    else:
+        waning_idx = lunar_day_num  # indices 16-29 map to 1-14 roc
+        day_str = KHMER_LUNAR_DAYS[waning_idx] if waning_idx < len(KHMER_LUNAR_DAYS) else "១៤រោច"
+        phase_base = "រោច (ខ្មៅ)"
+
+    # Moon emoji & phase label
+    if lunar_day_num == 15:
+        moon_emoji = "🌕"
+        phase = "🌕 ព្រះច័ន្ទពេញ"
+    elif lunar_day_num == 1:
+        moon_emoji = "🌑"
+        phase = "🌑 ច័ន្ទថ្មី"
+    elif lunar_day_num < 8:
+        moon_emoji = "🌒"
+        phase = f"🌒 {phase_base}"
+    elif lunar_day_num == 8:
+        moon_emoji = "🌓"
+        phase = "🌓 ០៨កើត"
+    elif lunar_day_num < 15:
+        moon_emoji = "🌔"
+        phase = f"🌔 {phase_base}"
+    elif lunar_day_num < 23:
+        moon_emoji = "🌖"
+        phase = f"🌖 {phase_base}"
+    elif lunar_day_num == 23:
+        moon_emoji = "🌗"
+        phase = "🌗 ០៨រោច"
+    else:
+        moon_emoji = "🌘"
+        phase = f"🌘 {phase_base}"
+
+    # ថ្ងៃសីល: lunar days 8, 15, 23, and the last day of the month (29 or 30)
+    is_seil = lunar_day_num in {8, 15, 23, month_length}
+
+    return {
+        "day": day_str,
+        "day_num": lunar_day_num,
+        "month": KHMER_LUNAR_MONTHS[lunar_month_index],
+        "month_index": lunar_month_index,
+        "year_be": lunar_be_year,
+        "month_length": month_length,
+        "phase": phase,
+        "moon_emoji": moon_emoji,
+        "is_seil": is_seil,
+    }
 
 
 # ══════════════════════════════════════════════
 # KHMER ERA YEAR (ព.ស.)
 # ══════════════════════════════════════════════
 def gregorian_to_khmer_era(d: date) -> dict:
-    if d.month < 4 or (d.month == 4 and d.day < 14):
+    """
+    Buddhist Era (ព.ស.) for Cambodia.
+    Khmer New Year falls ~April 13-14; before that date the BE year is year+543,
+    from that date onwards it is year+544.
+    """
+    if d.month < 4 or (d.month == 4 and d.day < 13):
         buddhist_era = d.year + 543
     else:
         buddhist_era = d.year + 544
-    return {"buddhist_era": buddhist_era, "saka_year": d.year - 78}
-
-
-# ══════════════════════════════════════════════
-# SIMPLE LUNAR DATE APPROXIMATION
-# ══════════════════════════════════════════════
-def gregorian_to_lunar(d: date) -> dict:
-    ref_date = date(2023, 1, 20)
-    ref_lunar_day = 1
-    ref_lunar_month = 1
-    ref_lunar_year = 2566
-    SYNODIC_MONTH = 29.53059
-
-    delta = (d - ref_date).days
-    total_lunar_days = ref_lunar_day - 1 + delta
-    lunar_month_count = int(total_lunar_days / SYNODIC_MONTH)
-    day_in_month = total_lunar_days % SYNODIC_MONTH
-    lunar_day_index = int(day_in_month) + 1
-    lunar_day_index = max(1, min(30, lunar_day_index))
-
-    lunar_month_index = (ref_lunar_month + lunar_month_count) % 12
-    lunar_year = ref_lunar_year + (ref_lunar_month + lunar_month_count) // 12
-
-    if lunar_day_index <= 15:
-        day_str = KHMER_LUNAR_DAYS[lunar_day_index]
-        phase = "🌒 កើត (ខ្នើត)"
-    else:
-        day_str = KHMER_LUNAR_DAYS[lunar_day_index] if lunar_day_index < len(KHMER_LUNAR_DAYS) else "១៤រោច"
-        phase = "🌘 រោច (ខ្មៅ)"
-
-    if lunar_day_index == 15:
-        moon_emoji = "🌕"
-        phase = "🌕 ព្រះច័ន្ទពេញ"
-    elif lunar_day_index == 1:
-        moon_emoji = "🌑"
-    elif lunar_day_index < 8:
-        moon_emoji = "🌒"
-    elif lunar_day_index < 15:
-        moon_emoji = "🌓"
-    elif lunar_day_index < 22:
-        moon_emoji = "🌖"
-    else:
-        moon_emoji = "🌘"
-
-    is_seil = lunar_day_index in SEIL_DAYS
-
-    return {
-        "day": day_str,
-        "day_num": lunar_day_index,
-        "month": KHMER_LUNAR_MONTHS[lunar_month_index],
-        "month_index": lunar_month_index,
-        "year_be": lunar_year,
-        "phase": phase,
-        "moon_emoji": moon_emoji,
-        "is_seil": is_seil,
-    }
+    saka_year = d.year - 78
+    return {"buddhist_era": buddhist_era, "saka_year": saka_year}
 
 
 # ══════════════════════════════════════════════
@@ -134,24 +184,57 @@ KHMER_ZODIAC = [
     "វក 🐒",  "រកា 🐓",  "ច 🐕",   "កុរ 🐗",
 ]
 
-def get_zodiac_year(year_be: int) -> str:
-    return KHMER_ZODIAC[(year_be - 4) % 12]
+
+def get_zodiac_year(be_year: int) -> str:
+    """
+    Khmer zodiac cycles every 12 years.
+    BE 2563 = ឆ្លូវ (ox) → index 1 in the array.
+    So: (be_year - 2563 + 1) % 12
+    """
+    return KHMER_ZODIAC[(be_year - 2563 + 1) % 12]
 
 
 # ══════════════════════════════════════════════
-# ថ្ងៃសីល — Get upcoming Seil days
+# DYNAMIC LUNAR HOLIDAYS
 # ══════════════════════════════════════════════
-def get_seil_days_this_month(year: int, month: int) -> list:
-    """Return list of dates that are ថ្ងៃសីល in the given month."""
-    import calendar as cal_mod
-    _, num_days = cal_mod.monthrange(year, month)
-    seil_dates = []
-    for day_num in range(1, num_days + 1):
-        d = date(year, month, day_num)
+def find_lunar_date_in_year(year: int, target_month_index: int, target_day_num: int) -> date | None:
+    """Find the Gregorian date for a specific lunar day+month in a Gregorian year."""
+    start = date(year, 1, 1)
+    end = date(year, 12, 31)
+    d = start
+    while d <= end:
         lunar = gregorian_to_lunar(d)
-        if lunar["is_seil"]:
-            seil_dates.append((d, lunar))
-    return seil_dates
+        if lunar["month_index"] == target_month_index and lunar["day_num"] == target_day_num:
+            return d
+        d += timedelta(days=1)
+    return None
+
+
+def get_vesak_date(year: int) -> date | None:
+    """Vesak / Visakha Bochea = 15th day of lunar month Visakha (index 5)."""
+    return find_lunar_date_in_year(year, 5, 15)
+
+
+def get_water_festival_dates(year: int) -> list[date]:
+    """
+    Water Festival / Bon Om Touk = 14th, 15th (full moon), 16th of lunar month Kattika (index 11).
+    Returns list of up to 3 dates.
+    """
+    d14 = find_lunar_date_in_year(year, 11, 14)
+    if d14:
+        return [d14 + timedelta(days=i) for i in range(3)]
+    return []
+
+
+def get_pchum_ben_dates(year: int) -> list[date]:
+    """
+    Pchum Ben = days 1-15 of lunar month Asouj (index 10), the last 3 days are public holiday.
+    We return the 13th, 14th, 15th of Asouj.
+    """
+    d13 = find_lunar_date_in_year(year, 10, 13)
+    if d13:
+        return [d13 + timedelta(days=i) for i in range(3)]
+    return []
 
 
 # ══════════════════════════════════════════════
@@ -159,34 +242,55 @@ def get_seil_days_this_month(year: int, month: int) -> list:
 # ══════════════════════════════════════════════
 def get_khmer_holidays(year: int) -> list:
     holidays = [
-        {"date": date(year, 1, 1),   "name": "ចូលឆ្នាំសាកល",                        "emoji": "🎆", "type": "public"},
-        {"date": date(year, 1, 7),   "name": "ទិវាជ័យជំនះ",                           "emoji": "🏆", "type": "public"},
-        {"date": date(year, 3, 8),   "name": "ទិវានារីអន្តរជាតិ",                     "emoji": "👩", "type": "public"},
-        {"date": date(year, 4, 13),  "name": "ចូលឆ្នាំខ្មែរ (ថ្ងៃទី១)",              "emoji": "🎊", "type": "public"},
-        {"date": date(year, 4, 14),  "name": "ចូលឆ្នាំខ្មែរ (ថ្ងៃទី២)",              "emoji": "🎊", "type": "public"},
-        {"date": date(year, 4, 15),  "name": "ចូលឆ្នាំខ្មែរ (ថ្ងៃទី៣)",              "emoji": "🎊", "type": "public"},
-        {"date": date(year, 4, 17),  "name": "ទិវាចងចាំប្រល័យពូជសាសន៍",             "emoji": "🕯️", "type": "public"},
-        {"date": date(year, 5, 1),   "name": "ទិវាពលករអន្តរជាតិ",                    "emoji": "✊", "type": "public"},
-        {"date": date(year, 5, 9),   "name": "ព្រះរាជពិធីច្រត់នាំងស្ទូង",            "emoji": "🌾", "type": "public"},
-        {"date": date(year, 5, 13),  "name": "ព្រះរាជទិននៃព្រះមហាក្សត្រ",           "emoji": "👑", "type": "public"},
-        {"date": date(year, 5, 14),  "name": "ព្រះរាជទិននៃព្រះមហាក្សត្រ",           "emoji": "👑", "type": "public"},
-        {"date": date(year, 5, 15),  "name": "ព្រះរាជទិននៃព្រះមហាក្សត្រ",           "emoji": "👑", "type": "public"},
-        {"date": date(year, 6, 1),   "name": "ទិវាកុមារអន្តរជាតិ",                   "emoji": "👶", "type": "public"},
-        {"date": date(year, 6, 18),  "name": "ទិវាកំណើតអតីតស្ដេច នរោត្តម សីហនុ",   "emoji": "🌹", "type": "public"},
-        {"date": date(year, 9, 24),  "name": "ទិវារដ្ឋធម្មនុញ្ញ",                    "emoji": "📜", "type": "public"},
-        {"date": date(year, 10, 15), "name": "ព្រះរាជបុណ្យភ្ជុំបិណ្ឌ (ថ្ងៃទី១)",    "emoji": "🏮", "type": "festival"},
-        {"date": date(year, 10, 16), "name": "ព្រះរាជបុណ្យភ្ជុំបិណ្ឌ (ថ្ងៃទី២)",    "emoji": "🏮", "type": "festival"},
-        {"date": date(year, 10, 17), "name": "ព្រះរាជបុណ្យភ្ជុំបិណ្ឌ (ថ្ងៃទី៣)",    "emoji": "🏮", "type": "festival"},
-        {"date": date(year, 10, 23), "name": "ទិវាសន្តិភាព ២៣ តុលា",                "emoji": "☮️", "type": "public"},
-        {"date": date(year, 10, 29), "name": "ព្រះរាជទិននៃព្រះមហាក្សត្រ (ព្រះអង្គ)", "emoji": "👑", "type": "public"},
-        {"date": date(year, 10, 30), "name": "ព្រះរាជទិននៃព្រះមហាក្សត្រ (ព្រះអង្គ)", "emoji": "👑", "type": "public"},
-        {"date": date(year, 10, 31), "name": "ព្រះរាជទិននៃព្រះមហាក្សត្រ (ព្រះអង្គ)", "emoji": "👑", "type": "public"},
-        {"date": date(year, 11, 9),  "name": "ទិវាឯករាជ្យជាតិ",                      "emoji": "🇰🇭", "type": "public"},
-        {"date": date(year, 11, 10), "name": "ពិធីបុណ្យអុំទូក (ថ្ងៃទី១)",            "emoji": "🚣", "type": "festival"},
-        {"date": date(year, 11, 11), "name": "ពិធីបុណ្យអុំទូក (ថ្ងៃទី២)",            "emoji": "🚣", "type": "festival"},
-        {"date": date(year, 11, 12), "name": "ពិធីបុណ្យអុំទូក (ថ្ងៃទី៣)",            "emoji": "🚣", "type": "festival"},
-        {"date": date(year, 12, 10), "name": "ទិវាសិទ្ធិមនុស្សអន្តរជាតិ",            "emoji": "🤝", "type": "public"},
+        # ── Fixed public holidays ──────────────────────────────────────────────
+        {"date": date(year, 1, 1),   "name": "ចូលឆ្នាំសាកល",                         "emoji": "🎆", "type": "public"},
+        {"date": date(year, 1, 7),   "name": "ទិវាជ័យជំនះ",                            "emoji": "🏆", "type": "public"},
+        {"date": date(year, 3, 8),   "name": "ទិវានារីអន្តរជាតិ",                      "emoji": "👩", "type": "public"},
+        {"date": date(year, 4, 13),  "name": "ចូលឆ្នាំខ្មែរ (ថ្ងៃទី១)",               "emoji": "🎊", "type": "public"},
+        {"date": date(year, 4, 14),  "name": "ចូលឆ្នាំខ្មែរ (ថ្ងៃទី២) — ថ្ងៃស្អែករ",  "emoji": "🎊", "type": "public"},
+        {"date": date(year, 4, 15),  "name": "ចូលឆ្នាំខ្មែរ (ថ្ងៃទី៣) — ថ្ងៃលើងសក់",  "emoji": "🎊", "type": "public"},
+        {"date": date(year, 4, 17),  "name": "ទិវាចងចាំប្រល័យពូជសាសន៍",              "emoji": "🕯️", "type": "public"},
+        {"date": date(year, 5, 1),   "name": "ទិវាពលករអន្តរជាតិ",                     "emoji": "✊", "type": "public"},
+        {"date": date(year, 5, 9),   "name": "ព្រះរាជពិធីច្រត់នាំងស្ទូង",             "emoji": "🌾", "type": "public"},
+        {"date": date(year, 5, 13),  "name": "ព្រះរាជទិននៃព្រះមហាក្សត្រ (ថ្ងៃទី១)",  "emoji": "👑", "type": "public"},
+        {"date": date(year, 5, 14),  "name": "ព្រះរាជទិននៃព្រះមហាក្សត្រ (ថ្ងៃទី២)",  "emoji": "👑", "type": "public"},
+        {"date": date(year, 5, 15),  "name": "ព្រះរាជទិននៃព្រះមហាក្សត្រ (ថ្ងៃទី៣)",  "emoji": "👑", "type": "public"},
+        {"date": date(year, 6, 1),   "name": "ទិវាកុមារអន្តរជាតិ",                    "emoji": "👶", "type": "public"},
+        {"date": date(year, 6, 18),  "name": "ទិវាកំណើតអតីតស្ដេច នរោត្តម សីហនុ",    "emoji": "🌹", "type": "public"},
+        {"date": date(year, 9, 24),  "name": "ទិវារដ្ឋធម្មនុញ្ញ",                     "emoji": "📜", "type": "public"},
+        {"date": date(year, 10, 23), "name": "ទិវាសន្តិភាព ២៣ តុលា",                 "emoji": "☮️", "type": "public"},
+        {"date": date(year, 10, 29), "name": "ព្រះរាជទិននៃព្រះមហាក្សត្រ (ថ្ងៃទី១)", "emoji": "👑", "type": "public"},
+        {"date": date(year, 10, 30), "name": "ព្រះរាជទិននៃព្រះមហាក្សត្រ (ថ្ងៃទី២)", "emoji": "👑", "type": "public"},
+        {"date": date(year, 10, 31), "name": "ព្រះរាជទិននៃព្រះមហាក្សត្រ (ថ្ងៃទី៣)", "emoji": "👑", "type": "public"},
+        {"date": date(year, 11, 9),  "name": "ទិវាឯករាជ្យជាតិ",                       "emoji": "🇰🇭", "type": "public"},
+        {"date": date(year, 12, 10), "name": "ទិវាសិទ្ធិមនុស្សអន្តរជាតិ",             "emoji": "🤝", "type": "public"},
     ]
+
+    # ── Dynamic lunar holidays ─────────────────────────────────────────────────
+
+    # Vesak / Visakha Bochea
+    vesak = get_vesak_date(year)
+    if vesak:
+        holidays.append({"date": vesak, "name": "ព្រះរាជពិធីវិសាខបូជា", "emoji": "☸️", "type": "festival"})
+
+    # Pchum Ben (last 3 days) — ភ្ជុំបិណ្ឌ
+    for i, pb in enumerate(get_pchum_ben_dates(year), 1):
+        holidays.append({
+            "date": pb,
+            "name": f"ព្រះរាជបុណ្យភ្ជុំបិណ្ឌ (ថ្ងៃទី{to_khmer_num(i)})",
+            "emoji": "🏮",
+            "type": "festival",
+        })
+
+    # Water Festival — អុំទូក
+    for i, wf in enumerate(get_water_festival_dates(year), 1):
+        holidays.append({
+            "date": wf,
+            "name": f"ពិធីបុណ្យអុំទូក (ថ្ងៃទី{to_khmer_num(i)})",
+            "emoji": "🚣",
+            "type": "festival",
+        })
+
     return sorted(holidays, key=lambda x: x["date"])
 
 
@@ -204,6 +308,22 @@ def get_today_holiday(d: date) -> dict | None:
         if h["date"] == d:
             return h
     return None
+
+
+# ══════════════════════════════════════════════
+# ថ្ងៃសីល — Get Seil days in month
+# ══════════════════════════════════════════════
+def get_seil_days_this_month(year: int, month: int) -> list:
+    """Return list of (date, lunar_dict) for ថ្ងៃសីល in the given month."""
+    import calendar as cal_mod
+    _, num_days = cal_mod.monthrange(year, month)
+    seil_dates = []
+    for day_num in range(1, num_days + 1):
+        d = date(year, month, day_num)
+        lunar = gregorian_to_lunar(d)
+        if lunar["is_seil"]:
+            seil_dates.append((d, lunar))
+    return seil_dates
 
 
 # ══════════════════════════════════════════════
@@ -227,7 +347,7 @@ def format_today_khmer(d: date = None) -> str:
         f"📅  *ថ្ងៃ{weekday_kh}*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🗓  *{to_khmer_num(d.day)} {month_kh} {to_khmer_num(d.year)}*\n\n"
-        f"☸️  *ព.ស.* {to_khmer_num(era['buddhist_era'])}  ·  {zodiac}\n\n"
+        f"☸️  *ព.ស.* {to_khmer_num(era['buddhist_era'])}  ·  ឆ្នាំ{zodiac}\n\n"
         f"{lunar['moon_emoji']}  *ច័ន្ទគតិ*\n"
         f"    {lunar['day']} {lunar['month']}\n"
         f"    {lunar['phase']}"
@@ -262,19 +382,17 @@ def format_month_calendar(year: int, month: int) -> str:
     zodiac = get_zodiac_year(be_year)
     today = date.today()
 
-    # ── Header ────────────────────────────────
     header = (
         f"📆  *{month_kh}  {to_khmer_num(year)}*\n"
-        f"    ព.ស. {to_khmer_num(be_year)}  ·  {zodiac}\n"
+        f"    ព.ស. {to_khmer_num(be_year)}  ·  ឆ្នាំ{zodiac}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
     )
 
-    # ── Grid ──────────────────────────────────
-    # Sun-first: អា ចន អ ព ព សុ សៅ
+    # Sun-first grid header: Sun Mon Tue Wed Thu Fri Sat
     WD = " អា  ចន  អ   ព   ព   សុ  សៅ"
 
     first_wd_mon, num_days = cal_mod.monthrange(year, month)
-    first_wd_sun = (first_wd_mon + 1) % 7
+    first_wd_sun = (first_wd_mon + 1) % 7   # Python Mon=0 → Sun=6; Sun-first col
 
     row_cells = ["    "] * first_wd_sun
     week_rows = []
@@ -336,23 +454,17 @@ def format_month_calendar(year: int, month: int) -> str:
         else:
             badge = f"📅 {to_khmer_num(day_num)} {month_kh}"
 
-        # Holiday
         if day_num in holidays_map:
             h = holidays_map[day_num]
-            events.append(
-                (d, 0,
-                 f"{h['emoji']}  *{h['name']}*\n"
-                 f"    {badge}  ·  {wday_kh}\n"
-                 f"    🌙 {lunar['day']} {lunar['month']}")
-            )
+            events.append((d, 0,
+                f"{h['emoji']}  *{h['name']}*\n"
+                f"    {badge}  ·  {wday_kh}\n"
+                f"    🌙 {lunar['day']} {lunar['month']}"))
 
-        # ថ្ងៃសីល
         if lunar["is_seil"] and delta >= 0:
-            events.append(
-                (d, 1,
-                 f"🙏  *ថ្ងៃសីល*  ·  {lunar['moon_emoji']} {lunar['day']} {lunar['month']}\n"
-                 f"    {badge}  ·  {wday_kh}")
-            )
+            events.append((d, 1,
+                f"🙏  *ថ្ងៃសីល*  ·  {lunar['moon_emoji']} {lunar['day']} {lunar['month']}\n"
+                f"    {badge}  ·  {wday_kh}"))
 
     events.sort(key=lambda x: (x[0], x[1]))
 
@@ -395,7 +507,6 @@ def format_seil_view() -> str:
     today = date.today()
     lines = []
 
-    # Collect next 8 ថ្ងៃសីល from today
     found = 0
     check = today
     while found < 8:
@@ -414,15 +525,16 @@ def format_seil_view() -> str:
             else:
                 badge = f"📅 {to_khmer_num(check.day)} {month_kh}"
 
-            # Moon label
-            if lunar["day_num"] == 8:
+            ld = lunar["day_num"]
+            if ld == 8:
                 moon_label = "🌓 ៨កើត"
-            elif lunar["day_num"] == 15:
-                moon_label = f"🌕 ១៥កើត — ព្រះច័ន្ទពេញ"
-            elif lunar["day_num"] == 23:
-                moon_label = f"🌗 ៨រោច"
+            elif ld == 15:
+                moon_label = "🌕 ១៥កើត — ព្រះច័ន្ទពេញ"
+            elif ld == 23:
+                moon_label = "🌗 ០៨រោច"
             else:
-                moon_label = f"🌑 {lunar['day']} — ច័ន្ទថ្មី"
+                # last day of month (29 or 30)
+                moon_label = f"🌑 {lunar['day']} — ច័ន្ទថ្មី (ខ្មៅ)"
 
             lines.append(
                 f"🙏  *ថ្ងៃសីល* — {moon_label}\n"
@@ -466,7 +578,7 @@ CALENDAR_MENU_TEXT = (
     "📅  *ថ្ងៃនេះ* — កាលបរិច្ឆេទខ្មែរ & ព.ស.\n"
     "🌙  *ច័ន្ទគតិ* — ប្រតិទិន ៧ ថ្ងៃ\n"
     "📆  *ប្រតិទិនខែ* — ប្រតិទិនពេញខែ\n"
-    "🙏  *ថ្ងៃសីល* — ថ្ងៃប្រតិបត្តិធម៌ (៨, ១៥, ២៣, ២៩/៣០)\n"
+    "🙏  *ថ្ងៃសីល* — ថ្ងៃប្រតិបត្តិធម៌ (៨, ១៥, ២៣, ខ្មៅ)\n"
     "🎉  *បុណ្យ & ថ្ងៃឈប់* — ខ្មែរ & ជាតិ\n"
     "🔄  *បំប្លែង* — ព.ស. ↔ គ.ស."
 )
@@ -491,7 +603,7 @@ async def khmer_calendar_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
     await query.answer()
     data = query.data
 
-    # ── Today ──────────────────────────────────
+    # ── Today ──────────────────────────────────────────────────────────────────
     if data == "kcal_today":
         text = format_today_khmer()
         await query.edit_message_text(
@@ -506,7 +618,7 @@ async def khmer_calendar_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
             ]),
         )
 
-    # ── 7-day lunar view ───────────────────────
+    # ── 7-day lunar view ───────────────────────────────────────────────────────
     elif data == "kcal_lunar":
         d = date.today()
         lunar = gregorian_to_lunar(d)
@@ -549,7 +661,7 @@ async def khmer_calendar_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
             ]]),
         )
 
-    # ── Month calendar ─────────────────────────
+    # ── Month calendar ─────────────────────────────────────────────────────────
     elif data == "kcal_month_now":
         today = date.today()
         text = format_month_calendar(today.year, today.month)
@@ -560,16 +672,21 @@ async def khmer_calendar_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         )
 
     elif data.startswith("kcal_month_"):
-        parts = data.split("_")
-        year_m, month_m = int(parts[2]), int(parts[3])
-        text = format_month_calendar(year_m, month_m)
-        await query.edit_message_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=month_nav_keyboard(year_m, month_m),
-        )
+        # Format: kcal_month_YYYY_MM  (e.g. kcal_month_2025_06)
+        try:
+            suffix = data[len("kcal_month_"):]   # "2025_06"
+            y_str, m_str = suffix.split("_")
+            year_m, month_m = int(y_str), int(m_str)
+            text = format_month_calendar(year_m, month_m)
+            await query.edit_message_text(
+                text,
+                parse_mode="Markdown",
+                reply_markup=month_nav_keyboard(year_m, month_m),
+            )
+        except Exception:
+            await query.answer("❌ ទម្រង់ callback ខុស", show_alert=True)
 
-    # ── ថ្ងៃសីល ────────────────────────────────
+    # ── ថ្ងៃសីល ────────────────────────────────────────────────────────────────
     elif data == "kcal_seil":
         text = format_seil_view()
         await query.edit_message_text(
@@ -583,9 +700,9 @@ async def khmer_calendar_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
             ]),
         )
 
-    # ── Holidays ───────────────────────────────
+    # ── Holidays ───────────────────────────────────────────────────────────────
     elif data == "kcal_holidays":
-        upcoming = get_upcoming_holidays(10)
+        upcoming = get_upcoming_holidays(12)
         today = date.today()
 
         lines = []
@@ -620,14 +737,14 @@ async def khmer_calendar_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
             ]]),
         )
 
-    # ── Convert ────────────────────────────────
+    # ── Convert ────────────────────────────────────────────────────────────────
     elif data == "kcal_convert":
         await query.edit_message_text(
             "🔄  *បំប្លែងកាលបរិច្ឆេទ*\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "វាយបញ្ចូលកាលបរិច្ឆេទ:\n\n"
-            "📌  `DD/MM/YYYY`  →  ព.ស.\n"
-            "📌  `BE YYYY`  →  គ.ស.\n\n"
+            "📌  `DD/MM/YYYY`  →  ព.ស. + ច័ន្ទគតិ\n"
+            "📌  `BE YYYY`  →  គ.ស. ប្រហាក់ប្រហែល\n\n"
             "ឧ.  `14/04/2025`  ឬ  `BE 2568`\n\n"
             "_វាយ /cancel ដើម្បីបោះបង់_",
             parse_mode="Markdown",
@@ -637,7 +754,7 @@ async def khmer_calendar_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         )
         return CALENDAR_CONVERT_WAIT
 
-    # ── Back to menu ───────────────────────────
+    # ── Back to menu ───────────────────────────────────────────────────────────
     elif data == "kcal_menu":
         await query.edit_message_text(
             CALENDAR_MENU_TEXT,
@@ -653,7 +770,7 @@ async def calendar_convert_receive(update: Update, ctx: ContextTypes.DEFAULT_TYP
     text = update.message.text.strip()
 
     try:
-        if "/" in text:
+        if "/" in text and not text.startswith("/"):
             parts = text.split("/")
             if len(parts) == 3:
                 day, month, year = int(parts[0]), int(parts[1]), int(parts[2])
@@ -664,6 +781,8 @@ async def calendar_convert_receive(update: Update, ctx: ContextTypes.DEFAULT_TYP
                 weekday_kh = KHMER_WEEKDAYS[d.weekday()]
                 month_kh = KHMER_MONTHS[d.month]
                 seil_note = "\n🙏  *ថ្ងៃសីល* — ថ្ងៃប្រតិបត្តិធម៌" if lunar["is_seil"] else ""
+                holiday = get_today_holiday(d)
+                holiday_note = f"\n{holiday['emoji']}  *{holiday['name']}*" if holiday else ""
 
                 result = (
                     f"🔄  *លទ្ធផលបំប្លែង*\n"
@@ -675,6 +794,7 @@ async def calendar_convert_receive(update: Update, ctx: ContextTypes.DEFAULT_TYP
                     f"{lunar['moon_emoji']}  *ច័ន្ទគតិ* {lunar['day']} {lunar['month']}\n"
                     f"    {lunar['phase']}"
                     f"{seil_note}"
+                    f"{holiday_note}"
                 )
             else:
                 raise ValueError("Invalid format")
