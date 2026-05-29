@@ -21,16 +21,20 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ensure_user(user.id, user.username or "")
 
     text = (
-        f"👋 *Welcome, {user.first_name}!*\n\n"
-        "I'm your all-in-one AI assistant:\n"
+        f"👋 *Welcome, {user.first_name}\\!*\n\n"
+        "I'm your all\\-in\\-one AI assistant:\n"
         "💰 Track expenses • 🤖 AI chat • 🎨 Image gen\n"
         "📝 Notes • 📄 PDF tools • ✨ Image upscaler\n\n"
         "Choose an option below:"
     )
     if update.message:
-        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
+        await update.message.reply_text(
+            text, parse_mode="MarkdownV2", reply_markup=main_menu_keyboard()
+        )
     else:
-        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
+        await update.callback_query.edit_message_text(
+            text, parse_mode="MarkdownV2", reply_markup=main_menu_keyboard()
+        )
 
 
 # ══════════════════════════════════════════════
@@ -39,9 +43,10 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = _help_text()
     kb = back_button("menu_main")
+    # Works whether triggered by command or callback button
     if update.message:
         await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
-    else:
+    elif update.callback_query:
         await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
@@ -65,14 +70,13 @@ def _help_text() -> str:
         "/chat — AI conversation\n\n"
         "━━━ 📄 *PDF Tools* ━━━\n"
         "/pdf — PDF menu\n"
-        "  📝 Text → PDF\n"
-        "  🖼️ Image → PDF\n"
-        "  📄 PDF → Text\n\n"
+        "  📝 Text to PDF\n"
+        "  🖼 Image to PDF\n"
+        "  📄 PDF to Text\n\n"
         "━━━ 📝 *Notes* ━━━\n"
         "/note — Manage notes\n\n"
         "━━━ 🗓 *Khmer Calendar* ━━━\n"
-        "/calendar — ប្រតិទិនខ្មែរ\n"
-        "  📅 Today • 🌙 Lunar • 🎉 Holidays • 🔄 Convert\n\n"
+        "/calendar — ប្រតិទិនខ្មែរ\n\n"
         "━━━ ⚙️ *Settings* ━━━\n"
         "/lang — Change language\n"
         "/setpin — Set PIN lock\n"
@@ -111,7 +115,7 @@ async def clear_chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════
-# MENU CALLBACK ROUTER — handles ALL menu_ callbacks
+# MENU CALLBACK ROUTER
 # ══════════════════════════════════════════════
 async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -161,10 +165,10 @@ async def _menu_imagegen(query, ctx):
     await query.edit_message_text(
         "🎨 *AI Image Generator*\n\n"
         "Use /imagine followed by your prompt.\n\n"
-        "*Example:*\n`/imagine a sunset over mountains, photorealistic`\n\n"
+        "Example: `/imagine a sunset over mountains`\n\n"
         "Available styles:\n"
         "🌄 Realistic • 🎌 Anime • 🌆 Cyberpunk\n"
-        "🕹️ Pixel Art • 🎲 3D Render",
+        "🕹 Pixel Art • 🎲 3D Render",
         parse_mode="Markdown",
         reply_markup=kb,
     )
@@ -177,10 +181,10 @@ async def _menu_upscale(query, ctx):
     ])
     await query.edit_message_text(
         "✨ *AI Image Upscaler*\n\n"
-        "Send /upscale and then send a photo to enhance its resolution.\n\n"
+        "Send /upscale then send a photo to enhance its resolution.\n\n"
         "Great for:\n"
         "• Low-res photos 📷\n"
-        "• Old family pictures 🖼️\n"
+        "• Old family pictures 🖼\n"
         "• Blurry screenshots 📱",
         parse_mode="Markdown",
         reply_markup=kb,
@@ -226,29 +230,29 @@ async def _menu_notes(query, ctx):
 async def _menu_expenses(query, ctx):
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("➕ Add",     switch_inline_query_current_chat="/add"),
-            InlineKeyboardButton("📅 Today",   switch_inline_query_current_chat="/today"),
+            InlineKeyboardButton("➕ Add",       switch_inline_query_current_chat="/add"),
+            InlineKeyboardButton("📅 Today",     switch_inline_query_current_chat="/today"),
         ],
         [
-            InlineKeyboardButton("📆 Month",   switch_inline_query_current_chat="/month"),
-            InlineKeyboardButton("💰 Budget",  switch_inline_query_current_chat="/budget"),
+            InlineKeyboardButton("📆 Month",     switch_inline_query_current_chat="/month"),
+            InlineKeyboardButton("💰 Budget",    switch_inline_query_current_chat="/budget"),
         ],
         [
-            InlineKeyboardButton("📊 Compare", switch_inline_query_current_chat="/compare"),
+            InlineKeyboardButton("📊 Compare",   switch_inline_query_current_chat="/compare"),
             InlineKeyboardButton("🔁 Recurring", switch_inline_query_current_chat="/recurring"),
         ],
         [
-            InlineKeyboardButton("🔍 By Date", switch_inline_query_current_chat="/date"),
-            InlineKeyboardButton("🏷️ By Tag",  switch_inline_query_current_chat="/tags"),
+            InlineKeyboardButton("🔍 By Date",   switch_inline_query_current_chat="/date"),
+            InlineKeyboardButton("🏷 By Tag",    switch_inline_query_current_chat="/tags"),
         ],
         [
-            InlineKeyboardButton("🗑️ Delete",  switch_inline_query_current_chat="/delete"),
+            InlineKeyboardButton("🗑 Delete",    switch_inline_query_current_chat="/delete"),
         ],
         [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
     ])
     await query.edit_message_text(
         "💰 *Expense Tracker*\n\n"
-        "Track your spending easily with AI:\n\n"
+        "Track your spending easily:\n\n"
         "• /add — Record new expense\n"
         "• /today — Today's total\n"
         "• /month — Monthly breakdown\n"
@@ -272,9 +276,9 @@ async def _menu_ai_finance(query, ctx):
         "🤖 *AI Financial Advisor*\n\n"
         "Get personalized financial insights based on your spending data.\n\n"
         "Use /ai to ask questions like:\n"
-        "• _\"Where am I spending the most?\"_\n"
-        "• _\"How can I save more this month?\"_\n"
-        "• _\"Am I close to my budget?\"_",
+        "• Where am I spending the most?\n"
+        "• How can I save more this month?\n"
+        "• Am I close to my budget?",
         parse_mode="Markdown",
         reply_markup=kb,
     )
@@ -283,20 +287,20 @@ async def _menu_ai_finance(query, ctx):
 async def _menu_pdf(query, ctx):
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📝 Text → PDF", callback_data="pdf_text"),
-            InlineKeyboardButton("🖼️ Image → PDF", callback_data="pdf_image"),
+            InlineKeyboardButton("📝 Text to PDF",   callback_data="pdf_text"),
+            InlineKeyboardButton("🖼 Image to PDF",  callback_data="pdf_image"),
         ],
         [
-            InlineKeyboardButton("📄 PDF → Text", callback_data="pdf_extract"),
+            InlineKeyboardButton("📄 PDF to Text",   callback_data="pdf_extract"),
         ],
         [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
     ])
     await query.edit_message_text(
         "📄 *PDF Tools*\n\n"
         "Choose what you want to do:\n\n"
-        "📝 *Text → PDF* — Convert text into a PDF file\n"
-        "🖼️ *Image → PDF* — Convert a photo into a PDF file\n"
-        "📄 *PDF → Text* — Extract text from a PDF file",
+        "📝 *Text to PDF* — Convert text into a PDF file\n"
+        "🖼 *Image to PDF* — Convert a photo into a PDF file\n"
+        "📄 *PDF to Text* — Extract text from a PDF file",
         parse_mode="Markdown",
         reply_markup=kb,
     )
@@ -305,12 +309,12 @@ async def _menu_pdf(query, ctx):
 async def _menu_settings(query, ctx):
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🌐 Language",    switch_inline_query_current_chat="/lang"),
-            InlineKeyboardButton("🔐 Set PIN",     switch_inline_query_current_chat="/setpin"),
+            InlineKeyboardButton("🌐 Language",   switch_inline_query_current_chat="/lang"),
+            InlineKeyboardButton("🔐 Set PIN",    switch_inline_query_current_chat="/setpin"),
         ],
         [
-            InlineKeyboardButton("⏰ Reminder",    switch_inline_query_current_chat="/reminder"),
-            InlineKeyboardButton("🧹 Clear Chat",  switch_inline_query_current_chat="/clearchat"),
+            InlineKeyboardButton("⏰ Reminder",   switch_inline_query_current_chat="/reminder"),
+            InlineKeyboardButton("🧹 Clear Chat", switch_inline_query_current_chat="/clearchat"),
         ],
         [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
     ])
@@ -336,28 +340,28 @@ async def _menu_help(query, ctx):
 async def _menu_calendar(query, ctx):
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📅 ថ្ងៃនេះ",        callback_data="kcal_today"),
-            InlineKeyboardButton("🌙 ច័ន្ទគតិ",        callback_data="kcal_lunar"),
+            InlineKeyboardButton("📅 ថ្ងៃនេះ",         callback_data="kcal_today"),
+            InlineKeyboardButton("🌙 ច័ន្ទគតិ",         callback_data="kcal_lunar"),
         ],
         [
-            InlineKeyboardButton("📆 ប្រតិទិនខែ",      callback_data="kcal_month_now"),
-            InlineKeyboardButton("🙏 ថ្ងៃសីល",         callback_data="kcal_seil"),
+            InlineKeyboardButton("📆 ប្រតិទិនខែ",       callback_data="kcal_month_now"),
+            InlineKeyboardButton("🙏 ថ្ងៃសីល",          callback_data="kcal_seil"),
         ],
         [
             InlineKeyboardButton("🎉 បុណ្យ & ថ្ងៃឈប់",  callback_data="kcal_holidays"),
-            InlineKeyboardButton("🔄 បំប្លែង",          callback_data="kcal_convert"),
+            InlineKeyboardButton("🔄 បំប្លែង",           callback_data="kcal_convert"),
         ],
-        [InlineKeyboardButton("🔙 ត្រឡប់ម៉ឺនុយ",       callback_data="menu_main")],
+        [InlineKeyboardButton("🔙 ត្រឡប់ម៉ឺនុយ",        callback_data="menu_main")],
     ])
     await query.edit_message_text(
-        "🗓  *ប្រតិទិនខ្មែរ*\n"
+        "🗓 *ប្រតិទិនខ្មែរ*\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📅  *ថ្ងៃនេះ* — កាលបរិច្ឆេទខ្មែរ & ព.ស.\n"
-        "🌙  *ច័ន្ទគតិ* — ប្រតិទិន ៧ ថ្ងៃ\n"
-        "📆  *ប្រតិទិនខែ* — ប្រតិទិនពេញខែ\n"
-        "🙏  *ថ្ងៃសីល* — ថ្ងៃប្រតិបត្តិធម៌\n"
-        "🎉  *បុណ្យ & ថ្ងៃឈប់* — ខ្មែរ & ជាតិ\n"
-        "🔄  *បំប្លែង* — ព.ស. ↔ គ.ស.",
+        "📅 *ថ្ងៃនេះ* — កាលបរិច្ឆេទខ្មែរ & ព.ស.\n"
+        "🌙 *ច័ន្ទគតិ* — ប្រតិទិន ៧ ថ្ងៃ\n"
+        "📆 *ប្រតិទិនខែ* — ប្រតិទិនពេញខែ\n"
+        "🙏 *ថ្ងៃសីល* — ថ្ងៃប្រតិបត្តិធម៌\n"
+        "🎉 *បុណ្យ & ថ្ងៃឈប់* — ខ្មែរ & ជាតិ\n"
+        "🔄 *បំប្លែង* — ព.ស. ↔ គ.ស.",
         parse_mode="Markdown",
         reply_markup=kb,
     )
