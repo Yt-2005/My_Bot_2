@@ -1937,11 +1937,6 @@
 #         return jsonify([dict(r) for r in rows])
 
 #     logger.info("✅ Admin dashboard registered at /admin")
-
-
-
-
-
 """
 database.py — PostgreSQL database layer for the Telegram Bot
 Supabase / any Postgres instance via environment variables.
