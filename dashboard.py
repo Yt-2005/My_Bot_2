@@ -4,6 +4,7 @@ Fixes:
   ✅ strftime → to_char (PostgreSQL)
   ✅ banned_users table auto-created in init_db (no more UndefinedTable)
   ✅ send_reminders uses psycopg not sqlite3
+  ✅ Admin check reads bot_admins DB table (not just config.py ADMIN_IDS)
 New:
   ✅ Full CRUD: users, expenses, notes
   ✅ /admin/expenses — browse, edit, delete any expense
@@ -13,6 +14,7 @@ New:
   ✅ /admin/api/* JSON endpoints for Telegram bot commands
   ✅ Export expenses as CSV
   ✅ Search users & expenses
+  ✅ Charts: spending by month (line), by category (doughnut), users growth (bar)
 """
 
 import logging
@@ -77,6 +79,7 @@ BASE_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Bot Admin Panel</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=DM+Sans:wght@400;500;700;900&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 :root {
   --bg: #080b14;
@@ -146,6 +149,15 @@ code{font-family:'JetBrains Mono',monospace;}
 .card-ico{font-size:24px;margin-bottom:10px;}
 .card-val{font-size:30px;font-weight:900;letter-spacing:-1px;line-height:1;}
 .card-lbl{font-size:10px;color:var(--muted);margin-top:5px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;}
+
+/* ── Charts ── */
+.chart-wrap{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:20px;margin-bottom:20px;
+}
+.chart-wrap h3{font-size:14px;font-weight:700;margin-bottom:16px;}
+.chart-container{position:relative;width:100%;}
+.chart-container canvas{max-width:100%;}
 
 /* ── Table ── */
 .table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:20px;}
@@ -264,7 +276,7 @@ tr:hover td{background:var(--surface2);}
 <div class="sidebar">
   <div class="sidebar-logo">
     <h1>🤖 BotAdmin</h1>
-    <p>CONTROL PANEL v2</p>
+    <p>CONTROL PANEL v3</p>
   </div>
   <div class="nav-section">Overview</div>
   <a href="/admin" class="nav-item {% if page=='dashboard' %}active{% endif %}">
@@ -351,6 +363,16 @@ def _send_tg(text_or_coro):
         logger.warning(f"TG send error: {e}")
         return False
 
+def _json_list(rows, key):
+    """Extract a column from rows into a JSON-safe list."""
+    import json
+    return json.dumps([str(r[key]) if r[key] is not None else "" for r in rows])
+
+def _json_vals(rows, key):
+    """Extract numeric column from rows."""
+    import json
+    return json.dumps([float(r[key]) if r[key] is not None else 0 for r in rows])
+
 
 # ─────────────────────────────────────────────────────────────────
 # REGISTER ALL ROUTES
@@ -413,7 +435,29 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
             FROM expenses e LEFT JOIN users u ON e.user_id=u.user_id
             ORDER BY e.created_at DESC LIMIT 8
         """)
+
+        # ── Chart data: last 7 days spending ──
+        daily_data = _safe_query(conn, """
+            SELECT to_char(date, 'Mon DD') as day, COALESCE(SUM(amount),0) as total
+            FROM expenses
+            WHERE date >= CURRENT_DATE - INTERVAL '6 days'
+            GROUP BY date, day ORDER BY date ASC
+        """)
+
+        # ── Chart data: category doughnut ──
+        cat_chart = _safe_query(conn, """
+            SELECT category, SUM(amount) as total FROM expenses
+            GROUP BY category ORDER BY total DESC LIMIT 8
+        """)
+
         conn.close()
+
+        # Chart JSON
+        import json
+        daily_labels = json.dumps([r['day'] for r in daily_data])
+        daily_vals   = json.dumps([float(r['total']) for r in daily_data])
+        cat_labels   = json.dumps([r['category'] or 'Other' for r in cat_chart])
+        cat_vals     = json.dumps([float(r['total']) for r in cat_chart])
 
         cat_rows = "".join(f"""
             <tr>
@@ -465,6 +509,23 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
             <div class="card-lbl">Error Logs</div>
           </div>
         </div>
+
+        <!-- ── CHARTS ROW ── -->
+        <div class="grid-2" style="margin-bottom:20px">
+          <div class="chart-wrap">
+            <h3>📅 Spending — Last 7 Days</h3>
+            <div class="chart-container" style="height:200px">
+              <canvas id="dailyChart"></canvas>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <h3>🍩 Spending by Category</h3>
+            <div class="chart-container" style="height:200px">
+              <canvas id="catChart"></canvas>
+            </div>
+          </div>
+        </div>
+
         <div class="grid-2">
           <div class="table-wrap">
             <div class="table-header"><h3>🏆 Top Categories</h3></div>
@@ -487,7 +548,62 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
           </div>
           <table><thead><tr><th>User ID</th><th>Username</th><th>Category</th><th>Amount</th><th>Note</th><th>Date</th><th></th></tr></thead>
           <tbody>{exp_rows or "<tr><td colspan='7' class='text-muted' style='text-align:center;padding:20px'>No expenses yet</td></tr>"}</tbody>
-        </table></div>"""
+        </table></div>
+
+        <script>
+        const CHART_DEFAULTS = {{
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {{ legend: {{ labels: {{ color: '#8899bb', font: {{ size: 11 }} }} }} }},
+        }};
+
+        // Daily spending line chart
+        new Chart(document.getElementById('dailyChart'), {{
+          type: 'line',
+          data: {{
+            labels: {daily_labels},
+            datasets: [{{
+              label: 'Spending ($)',
+              data: {daily_vals},
+              borderColor: '#4f8ef7',
+              backgroundColor: 'rgba(79,142,247,0.12)',
+              fill: true,
+              tension: 0.4,
+              pointBackgroundColor: '#4f8ef7',
+              pointRadius: 4,
+            }}]
+          }},
+          options: {{
+            ...CHART_DEFAULTS,
+            scales: {{
+              x: {{ ticks: {{ color: '#5a6a8a', font: {{ size: 10 }} }}, grid: {{ color: '#1e2535' }} }},
+              y: {{ ticks: {{ color: '#5a6a8a', font: {{ size: 10 }}, callback: v => '$'+v }}, grid: {{ color: '#1e2535' }} }}
+            }}
+          }}
+        }});
+
+        // Category doughnut
+        new Chart(document.getElementById('catChart'), {{
+          type: 'doughnut',
+          data: {{
+            labels: {cat_labels},
+            datasets: [{{
+              data: {cat_vals},
+              backgroundColor: [
+                'rgba(79,142,247,.7)','rgba(247,79,142,.7)','rgba(79,247,160,.7)',
+                'rgba(247,196,79,.7)','rgba(157,79,247,.7)','rgba(247,157,79,.7)',
+                'rgba(79,247,247,.7)','rgba(247,79,79,.7)'
+              ],
+              borderWidth: 0,
+            }}]
+          }},
+          options: {{
+            ...CHART_DEFAULTS,
+            cutout: '65%',
+            plugins: {{ legend: {{ position: 'right', labels: {{ color: '#8899bb', font: {{ size: 10 }}, boxWidth: 10 }} }} }}
+          }}
+        }});
+        </script>"""
 
         return render_page(content, page="dashboard")
 
@@ -517,7 +633,6 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
                 GROUP BY u.user_id ORDER BY u.created_at DESC
             """)
 
-        # Get banned users safely
         try:
             banned_rows = _safe_query(conn, "SELECT user_id FROM banned_users")
             banned_ids = {r['user_id'] for r in banned_rows}
@@ -584,7 +699,28 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
         """, (uid,))
         notes = _safe_query(conn, "SELECT id, content, created_at FROM notes WHERE user_id=%s ORDER BY created_at DESC LIMIT 20", (uid,))
         total_spent = (_safe_one(conn, "SELECT COALESCE(SUM(amount),0) AS t FROM expenses WHERE user_id=%s", (uid,)) or {}).get('t', 0)
+
+        # User's spending by category
+        user_cats = _safe_query(conn, """
+            SELECT category, SUM(amount) as total FROM expenses
+            WHERE user_id=%s GROUP BY category ORDER BY total DESC LIMIT 8
+        """, (uid,))
+
+        # User's spending last 6 months
+        user_monthly = _safe_query(conn, """
+            SELECT to_char(date, 'Mon YY') as month, SUM(amount) as total
+            FROM expenses WHERE user_id=%s
+            GROUP BY to_char(date,'Mon YY'), date_trunc('month', date)
+            ORDER BY date_trunc('month', date) ASC LIMIT 6
+        """, (uid,))
+
         conn.close()
+
+        import json
+        uc_labels = json.dumps([r['category'] or 'Other' for r in user_cats])
+        uc_vals   = json.dumps([float(r['total']) for r in user_cats])
+        um_labels = json.dumps([r['month'] for r in user_monthly])
+        um_vals   = json.dumps([float(r['total']) for r in user_monthly])
 
         msg = request.args.get("msg", "")
         alert = f'<div class="alert alert-success">{msg}</div>' if msg else ""
@@ -618,6 +754,22 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
           <div class="card blue"><div class="card-ico">💰</div><div class="card-val">${float(total_spent):.0f}</div><div class="card-lbl">Total Spent</div></div>
           <div class="card green"><div class="card-ico">🧾</div><div class="card-val">{len(expenses)}</div><div class="card-lbl">Expenses (last 30)</div></div>
           <div class="card yellow"><div class="card-ico">📝</div><div class="card-val">{len(notes)}</div><div class="card-lbl">Notes</div></div>
+        </div>
+
+        <!-- User charts -->
+        <div class="grid-2" style="margin-bottom:20px">
+          <div class="chart-wrap">
+            <h3>📊 Monthly Spending</h3>
+            <div class="chart-container" style="height:180px">
+              <canvas id="userMonthlyChart"></canvas>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <h3>🍩 By Category</h3>
+            <div class="chart-container" style="height:180px">
+              <canvas id="userCatChart"></canvas>
+            </div>
+          </div>
         </div>
 
         <div class="grid-2">
@@ -663,7 +815,37 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
           <div class="table-header"><h3>📝 Notes</h3></div>
           <table><thead><tr><th>Content</th><th>Created</th><th></th></tr></thead>
           <tbody>{note_rows or "<tr><td colspan='3' class='text-muted' style='text-align:center;padding:16px'>No notes</td></tr>"}</tbody></table>
-        </div>"""
+        </div>
+
+        <script>
+        const CD = {{
+          responsive:true, maintainAspectRatio:false,
+          plugins:{{legend:{{labels:{{color:'#8899bb',font:{{size:10}}}}}}}}
+        }};
+        new Chart(document.getElementById('userMonthlyChart'), {{
+          type:'bar',
+          data:{{
+            labels:{um_labels},
+            datasets:[{{label:'Spending ($)',data:{um_vals},
+              backgroundColor:'rgba(79,142,247,.55)',borderColor:'#4f8ef7',borderWidth:1,borderRadius:4}}]
+          }},
+          options:{{...CD,scales:{{
+            x:{{ticks:{{color:'#5a6a8a',font:{{size:10}}}},grid:{{color:'#1e2535'}}}},
+            y:{{ticks:{{color:'#5a6a8a',font:{{size:10}},callback:v=>'$'+v}},grid:{{color:'#1e2535'}}}}
+          }}}}
+        }});
+        new Chart(document.getElementById('userCatChart'), {{
+          type:'doughnut',
+          data:{{
+            labels:{uc_labels},
+            datasets:[{{data:{uc_vals},
+              backgroundColor:['rgba(79,142,247,.7)','rgba(247,79,142,.7)','rgba(79,247,160,.7)',
+              'rgba(247,196,79,.7)','rgba(157,79,247,.7)','rgba(247,157,79,.7)','rgba(79,247,247,.7)','rgba(247,79,79,.7)'],
+              borderWidth:0}}]
+          }},
+          options:{{...CD,cutout:'60%',plugins:{{legend:{{position:'right',labels:{{color:'#8899bb',font:{{size:10}},boxWidth:10}}}}}}}}
+        }});
+        </script>"""
         return render_page(content, page="users")
 
     # ── SEND MSG TO USER ───────────────────────────────────────────
@@ -1008,7 +1190,7 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
             return redirect(f"/admin/user/{uid}?msg=✅ Note deleted")
         return redirect("/admin/notes?msg=✅ Note deleted")
 
-    # ── STATS ──────────────────────────────────────────────────────
+    # ── STATS (with charts) ────────────────────────────────────────
     @flask_app.route("/admin/stats")
     @login_required
     def admin_stats():
@@ -1017,7 +1199,6 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
             SELECT category, COUNT(*) as cnt, SUM(amount) as total
             FROM expenses GROUP BY category ORDER BY total DESC
         """)
-        # ✅ FIXED: to_char instead of strftime
         by_month = _safe_query(conn, """
             SELECT to_char(date, 'YYYY-MM') as month, SUM(amount) as total, COUNT(*) as cnt
             FROM expenses GROUP BY month ORDER BY month DESC LIMIT 12
@@ -1027,7 +1208,36 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
             FROM expenses e LEFT JOIN users u ON e.user_id=u.user_id
             GROUP BY e.user_id, u.username ORDER BY total DESC LIMIT 10
         """)
+        # User growth: new users per month (last 12 months)
+        user_growth = _safe_query(conn, """
+            SELECT to_char(created_at, 'YYYY-MM') as month, COUNT(*) as cnt
+            FROM users GROUP BY month ORDER BY month ASC LIMIT 12
+        """)
+        # Active users per month
+        active_monthly = _safe_query(conn, """
+            SELECT to_char(date, 'YYYY-MM') as month, COUNT(DISTINCT user_id) as cnt
+            FROM expenses GROUP BY month ORDER BY month ASC LIMIT 12
+        """)
         conn.close()
+
+        import json
+        # Monthly bar chart data (reverse so oldest first)
+        months_rev = list(reversed(by_month))
+        m_labels = json.dumps([r['month'] for r in months_rev])
+        m_vals   = json.dumps([float(r['total']) for r in months_rev])
+        m_cnts   = json.dumps([int(r['cnt']) for r in months_rev])
+
+        # Top category bar
+        cat_labels = json.dumps([r['category'] or 'N/A' for r in by_cat[:10]])
+        cat_totals = json.dumps([float(r['total']) for r in by_cat[:10]])
+
+        # User growth
+        ug_labels = json.dumps([r['month'] for r in user_growth])
+        ug_vals   = json.dumps([int(r['cnt']) for r in user_growth])
+
+        # Active users per month
+        au_labels = json.dumps([r['month'] for r in active_monthly])
+        au_vals   = json.dumps([int(r['cnt']) for r in active_monthly])
 
         cat_rows = "".join(f"""
             <tr>
@@ -1054,6 +1264,39 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
         content = f"""
         <div class="page-title">Stats & Analytics</div>
         <div class="page-sub">FINANCIAL OVERVIEW</div>
+
+        <!-- Monthly spending chart -->
+        <div class="chart-wrap">
+          <h3>📅 Monthly Spending (Last 12 Months)</h3>
+          <div class="chart-container" style="height:240px">
+            <canvas id="monthlyChart"></canvas>
+          </div>
+        </div>
+
+        <!-- Category bar + User growth side by side -->
+        <div class="grid-2" style="margin-bottom:20px">
+          <div class="chart-wrap">
+            <h3>📁 Spending by Category</h3>
+            <div class="chart-container" style="height:220px">
+              <canvas id="catBarChart"></canvas>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <h3>👥 User Growth per Month</h3>
+            <div class="chart-container" style="height:220px">
+              <canvas id="userGrowthChart"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Active users chart -->
+        <div class="chart-wrap" style="margin-bottom:20px">
+          <h3>🟢 Active Users per Month (had at least 1 expense)</h3>
+          <div class="chart-container" style="height:180px">
+            <canvas id="activeUsersChart"></canvas>
+          </div>
+        </div>
+
         <div class="grid-2">
           <div class="table-wrap">
             <div class="table-header"><h3>📁 By Category</h3></div>
@@ -1070,7 +1313,80 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
           <div class="table-header"><h3>🏆 Top Spenders</h3></div>
           <table><thead><tr><th>User ID</th><th>Username</th><th>Transactions</th><th>Total Spent</th></tr></thead>
           <tbody>{user_rows or "<tr><td colspan='4' class='text-muted'>No data</td></tr>"}</tbody></table>
-        </div>"""
+        </div>
+
+        <script>
+        const CD = {{
+          responsive:true, maintainAspectRatio:false,
+          plugins:{{legend:{{labels:{{color:'#8899bb',font:{{size:11}}}}}}}}
+        }};
+        const gridColor = '#1e2535';
+        const tickStyle = {{color:'#5a6a8a',font:{{size:10}}}};
+
+        // Monthly spending bar + line combo
+        new Chart(document.getElementById('monthlyChart'), {{
+          type:'bar',
+          data:{{
+            labels:{m_labels},
+            datasets:[
+              {{label:'Spending ($)',data:{m_vals},backgroundColor:'rgba(79,142,247,.5)',
+                borderColor:'#4f8ef7',borderWidth:1,borderRadius:4,yAxisID:'y'}},
+              {{label:'# Expenses',data:{m_cnts},type:'line',borderColor:'#f7c44f',
+                backgroundColor:'transparent',tension:0.4,pointRadius:3,yAxisID:'y2'}}
+            ]
+          }},
+          options:{{...CD,scales:{{
+            x:{{ticks:tickStyle,grid:{{color:gridColor}}}},
+            y:{{ticks:{{...tickStyle,callback:v=>'$'+v}},grid:{{color:gridColor}},position:'left'}},
+            y2:{{ticks:tickStyle,grid:{{display:false}},position:'right'}}
+          }}}}
+        }});
+
+        // Category horizontal bar
+        new Chart(document.getElementById('catBarChart'), {{
+          type:'bar',
+          data:{{
+            labels:{cat_labels},
+            datasets:[{{label:'Total ($)',data:{cat_totals},
+              backgroundColor:'rgba(247,79,142,.6)',borderColor:'#f74f8e',
+              borderWidth:1,borderRadius:4}}]
+          }},
+          options:{{...CD,indexAxis:'y',scales:{{
+            x:{{ticks:{{...tickStyle,callback:v=>'$'+v}},grid:{{color:gridColor}}}},
+            y:{{ticks:tickStyle,grid:{{color:gridColor}}}}
+          }}}}
+        }});
+
+        // User growth
+        new Chart(document.getElementById('userGrowthChart'), {{
+          type:'bar',
+          data:{{
+            labels:{ug_labels},
+            datasets:[{{label:'New Users',data:{ug_vals},
+              backgroundColor:'rgba(79,247,160,.55)',borderColor:'#4ff7a0',
+              borderWidth:1,borderRadius:4}}]
+          }},
+          options:{{...CD,scales:{{
+            x:{{ticks:tickStyle,grid:{{color:gridColor}}}},
+            y:{{ticks:tickStyle,grid:{{color:gridColor}}}}
+          }}}}
+        }});
+
+        // Active users line
+        new Chart(document.getElementById('activeUsersChart'), {{
+          type:'line',
+          data:{{
+            labels:{au_labels},
+            datasets:[{{label:'Active Users',data:{au_vals},
+              borderColor:'#f7c44f',backgroundColor:'rgba(247,196,79,.1)',
+              fill:true,tension:0.4,pointRadius:4,pointBackgroundColor:'#f7c44f'}}]
+          }},
+          options:{{...CD,scales:{{
+            x:{{ticks:tickStyle,grid:{{color:gridColor}}}},
+            y:{{ticks:tickStyle,grid:{{color:gridColor}}}}
+          }}}}
+        }});
+        </script>"""
         return render_page(content, page="stats")
 
     # ── BROADCAST ──────────────────────────────────────────────────
@@ -1230,18 +1546,25 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
           </div>
         </div>
         <div class="section">
-          <h3>📋 Telegram Bot Commands Reference</h3>
-          <p style="color:var(--muted);font-size:12px;margin-bottom:12px">These commands work via Telegram bot for admins:</p>
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px">
-            {''.join(f'<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px"><code style="color:var(--accent);font-size:12px">{cmd}</code><p style="color:var(--muted);font-size:11px;margin-top:4px">{desc}</p></div>' for cmd, desc in [
-                ("/stats", "Show bot statistics"),
-                ("/broadcast <msg>", "Send message to all users"),
-                ("/ban <user_id>", "Ban a user"),
-                ("/unban <user_id>", "Unban a user"),
-                ("/userinfo <user_id>", "Get user details"),
-                ("/deleteuser <user_id>", "Delete user and all data"),
-                ("/errorlogs", "View recent errors"),
-                ("/maintenance", "Toggle maintenance mode"),
+          <h3>📋 Telegram Admin Commands Reference</h3>
+          <p style="color:var(--muted);font-size:12px;margin-bottom:12px">Commands available via Telegram (role-gated):</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px">
+            {''.join(f'<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px"><code style="color:var(--accent);font-size:12px">{cmd}</code><p style="color:var(--muted);font-size:11px;margin-top:4px">{desc}</p><span style="font-size:10px;color:var(--warning)">Min role: {role}</span></div>' for cmd, desc, role in [
+                ("/admin_help", "Show all your available admin commands", "moderator"),
+                ("/botstats", "Full bot statistics from DB", "moderator"),
+                ("/userinfo <id>", "User profile & total spending", "moderator"),
+                ("/ban <id> [reason]", "Ban a user (notifies them)", "moderator"),
+                ("/unban <id>", "Unban a user (notifies them)", "moderator"),
+                ("/sendmsg <id> <text>", "Send a message to any user", "moderator"),
+                ("/usertop", "Top 10 spenders", "admin"),
+                ("/recentusers", "Last 10 registered users", "admin"),
+                ("/topadmins", "List all bot admins", "admin"),
+                ("/deleteuser <id>", "Delete user and all data", "admin"),
+                ("/errorlogs", "View recent error logs", "admin"),
+                ("/maintenance", "Toggle maintenance mode", "admin"),
+                ("/setadmin <id> <role>", "Grant admin access", "superadmin"),
+                ("/removeadmin <id>", "Revoke admin access", "superadmin"),
+                ("/dbstats", "Raw DB table row counts", "superadmin"),
             ])}
           </div>
         </div>"""
@@ -1472,16 +1795,22 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
         )
 
         perms = [
-            ("/stats",       True,  True,  True),
-            ("/userinfo",    True,  True,  True),
-            ("/ban",         True,  True,  True),
-            ("/unban",       True,  True,  True),
-            ("/broadcast",   True,  True,  False),
-            ("/deleteuser",  True,  True,  False),
-            ("/errorlogs",   True,  True,  False),
-            ("/maintenance", True,  True,  False),
-            ("/setadmin",    True,  False, False),
-            ("/removeadmin", True,  False, False),
+            ("/admin_help",   True,  True,  True),
+            ("/botstats",     True,  True,  True),
+            ("/userinfo",     True,  True,  True),
+            ("/ban",          True,  True,  True),
+            ("/unban",        True,  True,  True),
+            ("/sendmsg",      True,  True,  True),
+            ("/usertop",      True,  True,  False),
+            ("/recentusers",  True,  True,  False),
+            ("/topadmins",    True,  True,  False),
+            ("/broadcast",    True,  True,  False),
+            ("/deleteuser",   True,  True,  False),
+            ("/errorlogs",    True,  True,  False),
+            ("/maintenance",  True,  True,  False),
+            ("/setadmin",     True,  False, False),
+            ("/removeadmin",  True,  False, False),
+            ("/dbstats",      True,  False, False),
         ]
         tick = "✅"
         dash = "<span style='color:var(--muted)'>—</span>"
@@ -1500,6 +1829,10 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
             """
         <div class="page-title">Bot Admin Roles</div>
         <div class="page-sub">MANAGE WHO CAN USE ADMIN COMMANDS IN THE TELEGRAM BOT</div>
+        <div class="alert alert-info" style="margin-bottom:20px">
+          ℹ️ Admins added here can immediately use admin commands in Telegram via /admin_help.
+          The bot checks this table on every command — no restart needed.
+        </div>
         <div class="grid-2" style="margin-bottom:20px">
           <div class="section">
             <h3>➕ Add / Update Admin</h3>

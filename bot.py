@@ -20,7 +20,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, ConversationHandler, TypeHandler, filters,
 )
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.ext._application import ApplicationHandlerStop
 
@@ -88,128 +88,6 @@ from handlers.khmer_calendar_handler import (
     CALENDAR_CONVERT_WAIT, CALENDAR_SEARCH_WAIT,
 )
 
-# ── NEW: Extra admin commands callable from Telegram ──
-from config import ADMIN_IDS as _ADMIN_IDS
-
-def _is_admin(user_id: int) -> bool:
-    return user_id in _ADMIN_IDS
-
-async def tg_userinfo(update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Admin: /userinfo <user_id>"""
-    if not _is_admin(update.effective_user.id):
-        return
-    from database import get_user_info
-    args = ctx.args
-    if not args:
-        await update.message.reply_text("Usage: /userinfo <user_id>")
-        return
-    try:
-        uid = int(args[0])
-        info = get_user_info(uid)
-        if not info:
-            await update.message.reply_text(f"❌ User {uid} not found.")
-            return
-        text = (
-            f"👤 *User Info*\n"
-            f"ID: `{info['user_id']}`\n"
-            f"Username: @{info['username'] or 'N/A'}\n"
-            f"Language: {info['language']}\n"
-            f"Budget: ${info['budget'] or 0:.2f}\n"
-            f"Reminder: {'ON' if info['daily_reminder'] else 'OFF'} {info['reminder_time'] or ''}\n"
-            f"Total Spent: ${info['total_spent']:.2f}\n"
-            f"Expenses: {info['expense_count']}\n"
-            f"Joined: {str(info['created_at'])[:10]}"
-        )
-        await update.message.reply_text(text, parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
-
-async def tg_ban(update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Admin: /ban <user_id>"""
-    if not _is_admin(update.effective_user.id):
-        return
-    from database import ban_user
-    args = ctx.args
-    if not args:
-        await update.message.reply_text("Usage: /ban <user_id>")
-        return
-    try:
-        uid = int(args[0])
-        ban_user(uid)
-        await update.message.reply_text(f"🚫 User `{uid}` has been banned.", parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
-
-async def tg_unban(update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Admin: /unban <user_id>"""
-    if not _is_admin(update.effective_user.id):
-        return
-    from database import unban_user
-    args = ctx.args
-    if not args:
-        await update.message.reply_text("Usage: /unban <user_id>")
-        return
-    try:
-        uid = int(args[0])
-        unban_user(uid)
-        await update.message.reply_text(f"✅ User `{uid}` has been unbanned.", parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
-
-async def tg_botstats(update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Admin: /botstats — full stats from PostgreSQL."""
-    if not _is_admin(update.effective_user.id):
-        return
-    from database import get_bot_stats
-    try:
-        s = get_bot_stats()
-        text = (
-            f"📊 *Bot Statistics*\n\n"
-            f"👥 Users: {s['total_users']} (+{s['new_today']} today)\n"
-            f"💰 Total Spent: ${s['total_spent']:.2f}\n"
-            f"📝 Notes: {s['total_notes']}\n"
-            f"⚠️ Errors: {s['errors']}\n"
-            f"🚫 Banned: {s['banned']}"
-        )
-        await update.message.reply_text(text, parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
-
-async def tg_sendmsg(update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Admin: /sendmsg <user_id> <message>"""
-    if not _is_admin(update.effective_user.id):
-        return
-    args = ctx.args
-    if not args or len(args) < 2:
-        await update.message.reply_text("Usage: /sendmsg <user_id> <message text>")
-        return
-    try:
-        uid = int(args[0])
-        msg = " ".join(args[1:])
-        await ctx.bot.send_message(chat_id=uid, text=f"📬 *Message from Admin:*\n\n{msg}", parse_mode="Markdown")
-        await update.message.reply_text(f"✅ Sent to `{uid}`", parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
-
-async def tg_deleteuser(update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Admin: /deleteuser <user_id>"""
-    if not _is_admin(update.effective_user.id):
-        return
-    args = ctx.args
-    if not args:
-        await update.message.reply_text("Usage: /deleteuser <user_id>")
-        return
-    try:
-        from database import get_conn
-        uid = int(args[0])
-        with get_conn() as conn:
-            c = conn.cursor()
-            for tbl in ["expenses", "notes", "chat_memory", "error_logs", "users"]:
-                c.execute(f"DELETE FROM {tbl} WHERE user_id=%s", (uid,))
-        await update.message.reply_text(f"🗑 User `{uid}` and all their data deleted.", parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
-
 from flask import Flask, request as flask_request, jsonify
 from dashboard import register_dashboard
 
@@ -227,6 +105,97 @@ logger = logging.getLogger(__name__)
 PORT = int(os.getenv("PORT", 10000))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://my-bot-2-4ayy.onrender.com")
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
+
+
+# ══════════════════════════════════════════════════════
+# 🛡️ ADMIN CHECK — reads BOTH config.py AND bot_admins DB table
+# ══════════════════════════════════════════════════════
+
+def _get_db_admins() -> dict:
+    """
+    Returns {user_id: role} for all admins in bot_admins table.
+    Falls back to {} on any error.
+    """
+    try:
+        from database import get_conn
+        with get_conn() as conn:
+            c = conn.cursor()
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS bot_admins (
+                    user_id   BIGINT PRIMARY KEY,
+                    username  TEXT,
+                    role      TEXT NOT NULL DEFAULT 'admin',
+                    note      TEXT,
+                    added_at  TIMESTAMPTZ DEFAULT NOW(),
+                    added_by  TEXT DEFAULT 'dashboard'
+                )
+            """)
+            conn.commit()
+            c.execute("SELECT user_id, role FROM bot_admins")
+            rows = c.fetchall()
+            # Support both dict-row and tuple-row cursors
+            result = {}
+            for r in rows:
+                if hasattr(r, 'keys'):
+                    result[int(r['user_id'])] = r['role']
+                else:
+                    result[int(r[0])] = r[1]
+            return result
+    except Exception as e:
+        logger.warning(f"_get_db_admins error: {e}")
+        return {}
+
+
+def _is_admin(user_id: int) -> bool:
+    """True if user is in config ADMIN_IDS OR bot_admins table."""
+    if user_id in ADMIN_IDS:
+        return True
+    db_admins = _get_db_admins()
+    return user_id in db_admins
+
+
+def _get_role(user_id: int) -> str | None:
+    """Return role string or None if not admin."""
+    if user_id in ADMIN_IDS:
+        return "superadmin"
+    db_admins = _get_db_admins()
+    return db_admins.get(user_id)
+
+
+def _has_role(user_id: int, min_role: str) -> bool:
+    """
+    Role hierarchy: superadmin > admin > moderator
+    Returns True if user's role >= min_role.
+    """
+    hierarchy = {"moderator": 1, "admin": 2, "superadmin": 3}
+    role = _get_role(user_id)
+    if role is None:
+        return False
+    return hierarchy.get(role, 0) >= hierarchy.get(min_role, 99)
+
+
+async def _admin_only(update: Update, min_role: str = "moderator") -> bool:
+    """
+    Check admin and reply with ⛔ if not authorized.
+    Returns True if authorized, False otherwise.
+    """
+    uid = update.effective_user.id
+    if _has_role(uid, min_role):
+        return True
+    role = _get_role(uid)
+    if role is not None:
+        await update.message.reply_text(
+            f"⛔ *Permission Denied.*\n\nYour role (`{role}`) doesn't have access to this command.\n"
+            f"Required: `{min_role}` or higher.",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text(
+            "⛔ *Admin only command.*\n\nYou are not registered as a bot admin.\n"
+            "Ask a super admin to grant you access via the dashboard.",
+            parse_mode="Markdown"
+        )
+    return False
 
 
 # ══════════════════════════════════════════════════════
@@ -270,6 +239,431 @@ async def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+
+# ══════════════════════════════════════════════════════
+# 👑 ADMIN COMMANDS
+# ══════════════════════════════════════════════════════
+
+async def admin_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/admin_help — show available admin commands based on role."""
+    uid = update.effective_user.id
+    role = _get_role(uid)
+    if role is None:
+        await update.message.reply_text(
+            "⛔ You are not a bot admin.\n\nAsk a super admin to grant you access via the dashboard.",
+            parse_mode="Markdown"
+        )
+        return
+
+    hierarchy = {"moderator": 1, "admin": 2, "superadmin": 3}
+    level = hierarchy.get(role, 0)
+    role_labels = {"superadmin": "👑 Super Admin", "admin": "🛡️ Admin", "moderator": "🔰 Moderator"}
+    role_label = role_labels.get(role, role)
+
+    lines = [f"🤖 *Admin Help — {role_label}*\n"]
+
+    # All admins (moderator+)
+    lines.append("*📋 Available to you:*")
+    lines.append("`/admin_help` — Show this help")
+    lines.append("`/botstats` — Bot statistics summary")
+    lines.append("`/userinfo <id>` — User profile & spending")
+    lines.append("`/ban <id>` — Ban a user")
+    lines.append("`/unban <id>` — Unban a user")
+    lines.append("`/sendmsg <id> <text>` — Send message to user")
+
+    if level >= 2:
+        lines.append("\n*🛡️ Admin commands:*")
+        lines.append("`/broadcast <msg>` — Message all users")
+        lines.append("`/deleteuser <id>` — Delete user & all data")
+        lines.append("`/errorlogs` — View recent errors")
+        lines.append("`/topadmins` — List all bot admins")
+        lines.append("`/usertop` — Top 10 spenders")
+        lines.append("`/recentusers` — Last 10 joined users")
+        lines.append("`/maintenance` — Toggle maintenance mode")
+
+    if level >= 3:
+        lines.append("\n*👑 Super Admin commands:*")
+        lines.append("`/setadmin <id> <role>` — Grant admin role")
+        lines.append("`/removeadmin <id>` — Remove admin role")
+        lines.append("`/dbstats` — Raw DB table counts")
+
+    lines.append(f"\n🌐 Dashboard: {WEBHOOK_URL}/admin")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def tg_userinfo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/userinfo <user_id>"""
+    if not await _admin_only(update, "moderator"):
+        return
+    from database import get_user_info
+    args = ctx.args
+    if not args:
+        await update.message.reply_text("Usage: `/userinfo <user_id>`", parse_mode="Markdown")
+        return
+    try:
+        uid = int(args[0])
+        info = get_user_info(uid)
+        if not info:
+            await update.message.reply_text(f"❌ User `{uid}` not found.", parse_mode="Markdown")
+            return
+        text = (
+            f"👤 *User Info*\n\n"
+            f"🆔 ID: `{info['user_id']}`\n"
+            f"👤 Username: @{info['username'] or 'N/A'}\n"
+            f"🌐 Language: `{info['language']}`\n"
+            f"💵 Budget: `${info['budget'] or 0:.2f}`\n"
+            f"⏰ Reminder: `{'ON' if info['daily_reminder'] else 'OFF'}` {info['reminder_time'] or ''}\n"
+            f"💰 Total Spent: `${info['total_spent']:.2f}`\n"
+            f"🧾 Expenses: `{info['expense_count']}`\n"
+            f"📅 Joined: `{str(info['created_at'])[:10]}`"
+        )
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🌐 View in Dashboard", url=f"{WEBHOOK_URL}/admin/user/{uid}")
+        ]])
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def tg_ban(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/ban <user_id> [reason]"""
+    if not await _admin_only(update, "moderator"):
+        return
+    from database import ban_user
+    args = ctx.args
+    if not args:
+        await update.message.reply_text("Usage: `/ban <user_id> [reason]`", parse_mode="Markdown")
+        return
+    try:
+        uid = int(args[0])
+        reason = " ".join(args[1:]) if len(args) > 1 else "No reason given"
+        ban_user(uid)
+        await update.message.reply_text(
+            f"🚫 User `{uid}` has been banned.\n📝 Reason: _{reason}_",
+            parse_mode="Markdown"
+        )
+        # Notify the banned user
+        try:
+            await ctx.bot.send_message(
+                chat_id=uid,
+                text=f"🚫 *You have been banned.*\n\nReason: _{reason}_\n\nContact support if you think this is a mistake.",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def tg_unban(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/unban <user_id>"""
+    if not await _admin_only(update, "moderator"):
+        return
+    from database import unban_user
+    args = ctx.args
+    if not args:
+        await update.message.reply_text("Usage: `/unban <user_id>`", parse_mode="Markdown")
+        return
+    try:
+        uid = int(args[0])
+        unban_user(uid)
+        await update.message.reply_text(
+            f"✅ User `{uid}` has been unbanned.",
+            parse_mode="Markdown"
+        )
+        try:
+            await ctx.bot.send_message(
+                chat_id=uid,
+                text="✅ *You have been unbanned!*\n\nYou can use the bot again. Use /start to begin.",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def tg_botstats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/botstats — full stats from PostgreSQL."""
+    if not await _admin_only(update, "moderator"):
+        return
+    from database import get_bot_stats
+    try:
+        s = get_bot_stats()
+        text = (
+            f"📊 *Bot Statistics*\n\n"
+            f"👥 Users: *{s['total_users']}* (+{s['new_today']} today)\n"
+            f"💰 Total Spent: *${s['total_spent']:.2f}*\n"
+            f"🧾 Expenses logged: *{s.get('total_expenses', 'N/A')}*\n"
+            f"📝 Notes: *{s['total_notes']}*\n"
+            f"⚠️ Errors: *{s['errors']}*\n"
+            f"🚫 Banned: *{s['banned']}*\n"
+            f"📅 Active (30d): *{s.get('active_30d', 'N/A')}*"
+        )
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🌐 Open Dashboard", url=f"{WEBHOOK_URL}/admin")
+        ]])
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def tg_sendmsg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/sendmsg <user_id> <message>"""
+    if not await _admin_only(update, "moderator"):
+        return
+    args = ctx.args
+    if not args or len(args) < 2:
+        await update.message.reply_text("Usage: `/sendmsg <user_id> <message text>`", parse_mode="Markdown")
+        return
+    try:
+        uid = int(args[0])
+        msg = " ".join(args[1:])
+        await ctx.bot.send_message(
+            chat_id=uid,
+            text=f"📬 *Message from Admin:*\n\n{msg}",
+            parse_mode="Markdown"
+        )
+        await update.message.reply_text(f"✅ Sent to `{uid}`", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def tg_deleteuser(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/deleteuser <user_id>"""
+    if not await _admin_only(update, "admin"):
+        return
+    args = ctx.args
+    if not args:
+        await update.message.reply_text("Usage: `/deleteuser <user_id>`", parse_mode="Markdown")
+        return
+    try:
+        from database import get_conn
+        uid = int(args[0])
+        with get_conn() as conn:
+            c = conn.cursor()
+            for tbl in ["expenses", "notes", "chat_memory", "error_logs", "users"]:
+                c.execute(f"DELETE FROM {tbl} WHERE user_id=%s", (uid,))
+            conn.commit()
+        await update.message.reply_text(
+            f"🗑 User `{uid}` and all their data deleted.",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def tg_set_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/setadmin <user_id> <role>  — superadmin only"""
+    if not await _admin_only(update, "superadmin"):
+        return
+    args = ctx.args
+    if len(args) < 2:
+        await update.message.reply_text(
+            "Usage: `/setadmin <user_id> <role>`\n\nRoles: `superadmin` | `admin` | `moderator`",
+            parse_mode="Markdown"
+        )
+        return
+    try:
+        uid = int(args[0])
+        role = args[1].lower()
+        if role not in ("superadmin", "admin", "moderator"):
+            await update.message.reply_text(
+                "❌ Invalid role. Use: `superadmin`, `admin`, or `moderator`",
+                parse_mode="Markdown"
+            )
+            return
+        from database import get_conn
+        with get_conn() as conn:
+            c = conn.cursor()
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS bot_admins (
+                    user_id BIGINT PRIMARY KEY, username TEXT,
+                    role TEXT NOT NULL DEFAULT 'admin', note TEXT,
+                    added_at TIMESTAMPTZ DEFAULT NOW(), added_by TEXT DEFAULT 'telegram'
+                )
+            """)
+            # Try to get username
+            try:
+                member = await ctx.bot.get_chat(uid)
+                uname = member.username or None
+            except Exception:
+                uname = None
+
+            c.execute("""
+                INSERT INTO bot_admins (user_id, username, role, added_by)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET role=EXCLUDED.role, username=COALESCE(EXCLUDED.username, bot_admins.username)
+            """, (uid, uname, role, f"tg:{update.effective_user.username or update.effective_user.id}"))
+            conn.commit()
+
+        role_labels = {"superadmin": "Super Admin 👑", "admin": "Admin 🛡️", "moderator": "Moderator 🔰"}
+        await update.message.reply_text(
+            f"✅ User `{uid}` granted *{role_labels[role]}* access.",
+            parse_mode="Markdown"
+        )
+        try:
+            await ctx.bot.send_message(
+                chat_id=uid,
+                text=f"🎉 *You have been granted bot admin access!*\n\nRole: *{role_labels[role]}*\n\nUse /admin\\_help to see your available commands.",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def tg_remove_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/removeadmin <user_id>  — superadmin only"""
+    if not await _admin_only(update, "superadmin"):
+        return
+    args = ctx.args
+    if not args:
+        await update.message.reply_text("Usage: `/removeadmin <user_id>`", parse_mode="Markdown")
+        return
+    try:
+        uid = int(args[0])
+        from database import get_conn
+        with get_conn() as conn:
+            c = conn.cursor()
+            c.execute("DELETE FROM bot_admins WHERE user_id=%s", (uid,))
+            conn.commit()
+        await update.message.reply_text(
+            f"🗑 Admin `{uid}` removed.",
+            parse_mode="Markdown"
+        )
+        try:
+            await ctx.bot.send_message(
+                chat_id=uid,
+                text="ℹ️ Your bot admin access has been revoked.",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def tg_top_admins(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/topadmins — list all bot admins"""
+    if not await _admin_only(update, "admin"):
+        return
+    try:
+        db_admins = _get_db_admins()
+        role_labels = {"superadmin": "👑", "admin": "🛡️", "moderator": "🔰"}
+
+        lines = ["👑 *Bot Admins*\n"]
+        # Config admins
+        if ADMIN_IDS:
+            lines.append("*From config.py:*")
+            for uid in ADMIN_IDS:
+                lines.append(f"  👑 `{uid}` — superadmin (config)")
+        # DB admins
+        if db_admins:
+            lines.append("\n*From database:*")
+            for uid, role in db_admins.items():
+                icon = role_labels.get(role, "👤")
+                lines.append(f"  {icon} `{uid}` — {role}")
+        if not ADMIN_IDS and not db_admins:
+            lines.append("_No admins configured._")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def tg_usertop(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/usertop — top 10 spenders"""
+    if not await _admin_only(update, "admin"):
+        return
+    try:
+        from database import get_conn
+        with get_conn() as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT e.user_id, u.username, SUM(e.amount) as total, COUNT(*) as cnt
+                FROM expenses e LEFT JOIN users u ON e.user_id=u.user_id
+                GROUP BY e.user_id, u.username ORDER BY total DESC LIMIT 10
+            """)
+            rows = c.fetchall()
+
+        lines = ["🏆 *Top 10 Spenders*\n"]
+        medals = ["🥇", "🥈", "🥉"] + ["🔹"] * 7
+        for i, r in enumerate(rows):
+            if hasattr(r, 'keys'):
+                uid, uname, total, cnt = r['user_id'], r['username'], r['total'], r['cnt']
+            else:
+                uid, uname, total, cnt = r
+            uname_str = f"@{uname}" if uname else f"`{uid}`"
+            lines.append(f"{medals[i]} {uname_str} — *${float(total):.2f}* ({cnt} expenses)")
+
+        if not rows:
+            lines.append("_No expense data yet._")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def tg_recent_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/recentusers — last 10 registered users"""
+    if not await _admin_only(update, "admin"):
+        return
+    try:
+        from database import get_conn
+        with get_conn() as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT user_id, username, language, created_at
+                FROM users ORDER BY created_at DESC LIMIT 10
+            """)
+            rows = c.fetchall()
+
+        lines = ["🆕 *Recent Users*\n"]
+        for r in rows:
+            if hasattr(r, 'keys'):
+                uid, uname, lang, ts = r['user_id'], r['username'], r['language'], r['created_at']
+            else:
+                uid, uname, lang, ts = r
+            uname_str = f"@{uname}" if uname else "no username"
+            lines.append(f"• `{uid}` {uname_str} [{lang}] — {str(ts)[:10]}")
+
+        if not rows:
+            lines.append("_No users yet._")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def tg_db_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/dbstats — raw table row counts (superadmin only)"""
+    if not await _admin_only(update, "superadmin"):
+        return
+    try:
+        from database import get_conn
+        tables = ["users", "expenses", "notes", "chat_memory", "error_logs", "banned_users", "bot_admins"]
+        lines = ["🗄️ *Database Table Counts*\n"]
+        with get_conn() as conn:
+            c = conn.cursor()
+            for tbl in tables:
+                try:
+                    c.execute(f"SELECT COUNT(*) FROM {tbl}")
+                    row = c.fetchone()
+                    cnt = row[0] if row else 0
+                    lines.append(f"`{tbl}`: *{cnt}* rows")
+                except Exception:
+                    lines.append(f"`{tbl}`: _(table not found)_")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+# ══════════════════════════════════════════════════════
+# 🔨 BUILD APP
+# ══════════════════════════════════════════════════════
 
 def build_app():
     app = (
@@ -482,6 +876,7 @@ def build_app():
                  reminder_conv, broadcast_conv, pdf_conv, calendar_conv]:
         app.add_handler(conv)
 
+    # ── Regular commands ──
     app.add_handler(CommandHandler("start",       start))
     app.add_handler(CommandHandler("help",        help_cmd))
     app.add_handler(CommandHandler("clearchat",   clear_chat))
@@ -493,7 +888,6 @@ def build_app():
     app.add_handler(CommandHandler("ai",          ai_finance))
     app.add_handler(CommandHandler("pdf",         pdf_cmd))
     app.add_handler(CommandHandler("calendar",    khmer_calendar_cmd))
-    # ── New AI commands ──
     app.add_handler(CommandHandler("translate",   translate_cmd))
     app.add_handler(CommandHandler("write",       write_cmd))
     app.add_handler(CommandHandler("summarize",   summarize_cmd))
@@ -507,13 +901,20 @@ def build_app():
     app.add_handler(CommandHandler("maintenance", maintenance_toggle))
     app.add_handler(CommandHandler("restart",     restart_info))
 
-    # ── Admin commands ──
-    app.add_handler(CommandHandler("botstats",   tg_botstats))
-    app.add_handler(CommandHandler("ban",        tg_ban))
-    app.add_handler(CommandHandler("unban",      tg_unban))
-    app.add_handler(CommandHandler("userinfo",   tg_userinfo))
-    app.add_handler(CommandHandler("sendmsg",    tg_sendmsg))
-    app.add_handler(CommandHandler("deleteuser", tg_deleteuser))
+    # ── Admin commands (DB-aware) ──
+    app.add_handler(CommandHandler("admin_help",   admin_help))
+    app.add_handler(CommandHandler("botstats",     tg_botstats))
+    app.add_handler(CommandHandler("ban",          tg_ban))
+    app.add_handler(CommandHandler("unban",        tg_unban))
+    app.add_handler(CommandHandler("userinfo",     tg_userinfo))
+    app.add_handler(CommandHandler("sendmsg",      tg_sendmsg))
+    app.add_handler(CommandHandler("deleteuser",   tg_deleteuser))
+    app.add_handler(CommandHandler("setadmin",     tg_set_admin))
+    app.add_handler(CommandHandler("removeadmin",  tg_remove_admin))
+    app.add_handler(CommandHandler("topadmins",    tg_top_admins))
+    app.add_handler(CommandHandler("usertop",      tg_usertop))
+    app.add_handler(CommandHandler("recentusers",  tg_recent_users))
+    app.add_handler(CommandHandler("dbstats",      tg_db_stats))
 
     app.add_handler(CallbackQueryHandler(image_style_callback,       pattern=r"^imgstyle\|"))
     app.add_handler(CallbackQueryHandler(reimagine_callback,         pattern=r"^reimagine\|"))
