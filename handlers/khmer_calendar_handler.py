@@ -477,8 +477,9 @@ def _seil_moon_label(lunar: dict) -> str:
         return "🌕 ១៥កើត — ព្រះច័ន្ទពេញ"
     if mp == 1 and pd == 8:
         return "🌗 ៨រោច"
-    # last roch day
-    return f"🌑 {lunar['day']} — ច័ន្ទថ្មី (ខ្មៅ)"
+    # last roch day: pd=14 for 29-day month, pd=15 for 30-day month
+    roch_label = f"{'១៤' if pd == 14 else '១៥'}រោច" if pd in (14, 15) else lunar['day']
+    return f"🌑 {roch_label} — ច័ន្ទថ្មី (ខ្មៅ)"
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -609,9 +610,11 @@ def format_month_calendar(year: int, month: int) -> str:
                 f"    🌙 {lunar['day']} {lunar['month']}"))
 
         if lunar["is_seil"] and delta >= 0:
+            seil_label = _seil_moon_label(lunar)
             events.append((d, 1,
-                f"🙏  *ថ្ងៃសីល*  ·  {lunar['moon_emoji']} {lunar['day']} {lunar['month']}\n"
-                f"    {badge}  ·  {wday_kh}"))
+                f"🙏  *ថ្ងៃសីល* — {seil_label}\n"
+                f"    {badge}  ·  {wday_kh}\n"
+                f"    {lunar['day']} {lunar['month']}"))
 
     events.sort(key=lambda x: (x[0], x[1]))
     if events:
@@ -647,11 +650,16 @@ def format_seil_view() -> str:
                 badge = f"📅 {to_khmer_num(check.day)} {month_kh}"
 
             moon_label = _seil_moon_label(lunar)
+            # Sub-label: show day + month clearly (no italic wrapping to avoid Markdown issues)
+            day_month = f"{lunar['day']} {lunar['month']}"
+            # For last-roch on a 29-day month, add clarification
+            if lunar["is_last_roch"] and lunar["month_len"] == 29:
+                day_month += "  _(ខែ២៩ថ្ងៃ)_"
 
             lines.append(
                 f"🙏  *ថ្ងៃសីល* — {moon_label}\n"
                 f"    {badge}  ·  {wday_kh} {to_khmer_num(check.day)} {month_kh}\n"
-                f"    _{lunar['day']} {lunar['month']}_"
+                f"    {day_month}"
             )
             found += 1
 
