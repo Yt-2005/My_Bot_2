@@ -14,10 +14,3 @@ aiohttp>=3.9.0
 
 # AI
 groq>=0.9.0
-
-# Upscaling (pick ONE based on what upscale_engine provides)
-# Option A — if upscale_engine is your own file, nothing to add here
-# Option B — if it's a lightweight waifu2x/Real-ESRGAN wrapper:
-# realesrgan        ← heavy, needs torch
-# Option C — lightweight alternative (no GPU):
-# super-image>=0.1.3
