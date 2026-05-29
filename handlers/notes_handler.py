@@ -144,8 +144,9 @@ async def note_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     text = f"📋 *Your Notes* ({len(notes)} total)\n\n"
     for note in notes:
-        # Format date nicely
-        date = note["created_at"][:10]
+        # Format date nicely — handle both datetime objects and strings
+        raw = note["created_at"]
+        date = raw.strftime("%Y-%m-%d") if hasattr(raw, "strftime") else str(raw)[:10]
         text += f"*#{note['id']}* — {date}\n{note['content']}\n\n"
 
     if len(text) > 4000:
@@ -261,7 +262,8 @@ async def note_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             text = f"📋 *Your Notes* ({len(notes)} total)\n\n"
             for note in notes:
-                date = note["created_at"][:10]
+                raw = note["created_at"]
+                date = raw.strftime("%Y-%m-%d") if hasattr(raw, "strftime") else str(raw)[:10]
                 text += f"*#{note['id']}* — {date}\n{note['content']}\n\n"
             if len(text) > 4000:
                 text = text[:3900] + "\n\n_...trimmed_"

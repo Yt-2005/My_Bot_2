@@ -1723,8 +1723,12 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
                         async def _notify():
                             await _bot_app.bot.send_message(
                                 chat_id=uid,
-                                text="🎉 *You have been granted bot admin access!*\n\nRole: *" + role_label + "*" + note_line + "\n\nUse /admin\\_help to see your available commands.",
-                                parse_mode="Markdown"
+                                text=(
+                                    "🎉 <b>You have been granted bot admin access!</b>\n\n"
+                                    "Role: <b>" + role_label + "</b>" + note_line + "\n\n"
+                                    "Use /admin_help to see your available commands."
+                                ),
+                                parse_mode="HTML"
                             )
                         try:
                             loop = asyncio.new_event_loop()
