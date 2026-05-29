@@ -308,6 +308,55 @@ def get_conn():
     """Return a database connection (for use in admin functions that need raw connection)."""
     return db()
 
+# ── Chat memory functions ──────────────────────────────────────────
+def get_chat_history(user_id, limit=10):
+    """Get recent chat history for a user as a list of {role, content} dicts."""
+    with db() as conn:
+        rows = _safe_query(
+            conn,
+            """
+            SELECT message, is_bot
+            FROM chat_memory
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (user_id, limit),
+        )
+    # Rows come newest-first, reverse to chronological order
+    rows.reverse()
+    return [
+        {"role": "assistant" if r["is_bot"] else "user", "content": r["message"]}
+        for r in rows
+    ]
+
+
+def save_chat_message(user_id, role, content):
+    """Save a chat message to memory. role should be 'user' or 'assistant'."""
+    is_bot = role == "assistant"
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO chat_memory (user_id, message, is_bot)
+            VALUES (%s, %s, %s)
+            """,
+            (user_id, content, is_bot),
+        )
+        conn.commit()
+
+
+def clear_chat_history(user_id):
+    """Delete all chat memory for a user."""
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM chat_memory WHERE user_id = %s",
+            (user_id,),
+        )
+        conn.commit()
+
+
 # For compatibility with dashboard.py's db() function (if needed)
 def set_bot_app(app):
     """Placeholder for compatibility."""
