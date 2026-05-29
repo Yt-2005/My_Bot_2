@@ -284,6 +284,9 @@ tr:hover td{background:var(--surface2);}
     <span class="ico">📈</span><span>Stats</span>
   </a>
   <div class="nav-section">Tools</div>
+  <a href="/admin/admins" class="nav-item {% if page=='admins' %}active{% endif %}">
+    <span class="ico">👑</span><span>Bot Admins</span>
+  </a>
   <a href="/admin/broadcast" class="nav-item {% if page=='broadcast' %}active{% endif %}">
     <span class="ico">📢</span><span>Broadcast</span>
   </a>
@@ -1344,5 +1347,252 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
             )
         except Exception as e:
             return f"<pre>DB URL: {url_display}\nError: {e}</pre>", 500
+
+    # ══════════════════════════════════════════════════════════════════
+    # ADMIN ROLE MANAGEMENT  (/admin/admins)
+    # ══════════════════════════════════════════════════════════════════
+
+    def _ensure_admins_table(cur):
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bot_admins (
+                user_id   BIGINT PRIMARY KEY,
+                username  TEXT,
+                role      TEXT NOT NULL DEFAULT 'admin',
+                note      TEXT,
+                added_at  TIMESTAMPTZ DEFAULT NOW(),
+                added_by  TEXT DEFAULT 'dashboard'
+            )
+        """)
+
+    @flask_app.route("/admin/admins", methods=["GET", "POST"])
+    @login_required
+    def admin_roles():
+        alert = ""
+        conn = db()
+
+        if request.method == "POST":
+            action  = request.form.get("action", "")
+            uid_str = request.form.get("uid", "").strip()
+            uname   = request.form.get("username", "").strip()
+            role    = request.form.get("role", "admin").strip()
+            note    = request.form.get("note", "").strip()
+            try:
+                cur = conn.cursor()
+                _ensure_admins_table(cur)
+
+                if action == "add" and uid_str:
+                    uid = int(uid_str)
+                    cur.execute("""
+                        INSERT INTO bot_admins (user_id, username, role, note)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (user_id) DO UPDATE
+                          SET username=EXCLUDED.username,
+                              role=EXCLUDED.role,
+                              note=EXCLUDED.note
+                    """, (uid, uname or None, role, note or None))
+                    conn.commit()
+                    alert = f'<div class="alert alert-success">✅ Admin {uid} ({role}) saved</div>'
+                    # Notify user via Telegram
+                    if _bot_app:
+                        role_label = {"superadmin": "Super Admin 👑", "admin": "Admin 🛡️",
+                                      "moderator": "Moderator 🔰"}.get(role, role)
+                        import asyncio
+                        async def _notify():
+                            await _bot_app.bot.send_message(
+                                chat_id=uid,
+                                text=f"🎉 *You have been granted bot admin access!*\n\n"
+                                     f"Role: *{role_label}*"
+                                     + (f"\nNote: {note}" if note else "") +
+                                     f"\n\nUse /admin\\_help to see your available commands.",
+                                parse_mode="Markdown"
+                            )
+                        try:
+                            loop = asyncio.new_event_loop()
+                            loop.run_until_complete(_notify())
+                            loop.close()
+                        except Exception:
+                            pass
+
+                elif action == "remove" and uid_str:
+                    uid = int(uid_str)
+                    cur.execute("DELETE FROM bot_admins WHERE user_id=%s", (uid,))
+                    conn.commit()
+                    alert = f'<div class="alert alert-success">🗑 Admin {uid} removed</div>'
+
+                elif action == "change_role" and uid_str:
+                    uid = int(uid_str)
+                    cur.execute("UPDATE bot_admins SET role=%s WHERE user_id=%s", (role, uid))
+                    conn.commit()
+                    alert = f'<div class="alert alert-success">✅ Role updated → {role} for {uid}</div>'
+
+            except Exception as e:
+                conn.rollback()
+                alert = f'<div class="alert alert-error">❌ {e}</div>'
+
+        # Ensure table exists for GET too
+        try:
+            cur2 = conn.cursor()
+            _ensure_admins_table(cur2)
+            conn.commit()
+        except Exception:
+            pass
+
+        admins = _safe_query(conn, "SELECT * FROM bot_admins ORDER BY added_at DESC")
+        conn.close()
+
+        def _role_badge(r):
+            cls = {"superadmin": "bm", "admin": "bg", "moderator": "bg3"}.get(r, "by")
+            ico = {"superadmin": "👑", "admin": "🛡️", "moderator": "🔰"}.get(r, "👤")
+            return f'<span class="badge {cls}">{ico} {r}</span>'
+
+        rows = "".join(f"""
+            <tr>
+              <td><span class="user-id">{a['user_id']}</span></td>
+              <td>{('@' + a['username']) if a['username'] else '—'}</td>
+              <td>{_role_badge(a['role'])}</td>
+              <td class="text-muted" style="font-size:11px;max-width:160px">{a['note'] or '—'}</td>
+              <td class="text-muted mono">{str(a['added_at'])[:16]}</td>
+              <td class="text-muted mono">{a['added_by'] or '—'}</td>
+              <td style="display:flex;gap:4px;flex-wrap:wrap;padding:8px 14px">
+                <button onclick="openChangeRole({a['user_id']},'{a['role']}')"
+                  class="btn btn-yellow btn-xs">✏️ Role</button>
+                <form method="POST" style="display:inline"
+                  onsubmit="return confirm('Remove admin {a['user_id']}?')">
+                  <input type="hidden" name="action" value="remove">
+                  <input type="hidden" name="uid"    value="{a['user_id']}">
+                  <button type="submit" class="btn btn-red btn-xs">🗑 Remove</button>
+                </form>
+              </td>
+            </tr>""" for a in admins)
+
+        perm_rows = "".join(f"""<tr>
+          <td style="padding:6px 10px"><code style="color:var(--accent);font-size:11px">{cmd}</code></td>
+          <td style="text-align:center;padding:6px 10px">{'✅' if s else '<span style=\"color:var(--muted)\">—</span>'}</td>
+          <td style="text-align:center;padding:6px 10px">{'✅' if a else '<span style=\"color:var(--muted)\">—</span>'}</td>
+          <td style="text-align:center;padding:6px 10px">{'✅' if m else '<span style=\"color:var(--muted)\">—</span>'}</td>
+        </tr>""" for cmd, s, a, m in [
+            ("/stats",         True,  True,  True),
+            ("/userinfo",      True,  True,  True),
+            ("/ban",           True,  True,  True),
+            ("/unban",         True,  True,  True),
+            ("/broadcast",     True,  True,  False),
+            ("/deleteuser",    True,  True,  False),
+            ("/errorlogs",     True,  True,  False),
+            ("/maintenance",   True,  True,  False),
+            ("/setadmin",      True,  False, False),
+            ("/removeadmin",   True,  False, False),
+        ])
+
+        content = f"""
+        {alert}
+        <div class="page-title">Bot Admin Roles</div>
+        <div class="page-sub">MANAGE WHO CAN USE ADMIN COMMANDS IN THE TELEGRAM BOT</div>
+
+        <div class="grid-2" style="margin-bottom:20px">
+          <div class="section">
+            <h3>➕ Add / Update Admin</h3>
+            <form method="POST">
+              <input type="hidden" name="action" value="add">
+              <div class="form-group">
+                <label class="form-label">Telegram User ID <span style="color:var(--danger)">*</span></label>
+                <input name="uid" class="form-input" placeholder="123456789" required>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Username (no @)</label>
+                <input name="username" class="form-input" placeholder="johndoe">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Role</label>
+                <select name="role" class="form-select">
+                  <option value="superadmin">👑 Super Admin — full access</option>
+                  <option value="admin" selected>🛡️ Admin — most commands</option>
+                  <option value="moderator">🔰 Moderator — view + ban only</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Note (optional)</label>
+                <input name="note" class="form-input" placeholder="e.g. Night shift operator">
+              </div>
+              <button type="submit" class="btn btn-blue">👑 Grant Access</button>
+            </form>
+          </div>
+
+          <div class="section">
+            <h3>📋 Role Permissions</h3>
+            <table style="width:100%;font-size:12px">
+              <thead><tr>
+                <th style="padding:7px 10px">Command</th>
+                <th style="padding:7px 10px;text-align:center">👑 Super</th>
+                <th style="padding:7px 10px;text-align:center">🛡️ Admin</th>
+                <th style="padding:7px 10px;text-align:center">🔰 Mod</th>
+              </tr></thead>
+              <tbody>{perm_rows}</tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <div class="table-header">
+            <h3>👑 Current Bot Admins</h3>
+            <span class="text-muted mono">{len(admins)} admin(s)</span>
+          </div>
+          <table>
+            <thead><tr>
+              <th>User ID</th><th>Username</th><th>Role</th>
+              <th>Note</th><th>Added At</th><th>Added By</th><th>Actions</th>
+            </tr></thead>
+            <tbody>{rows or "<tr><td colspan='7' class='text-muted' style='text-align:center;padding:24px'>No admins yet — add one above</td></tr>"}</tbody>
+          </table>
+        </div>
+
+        <!-- Change Role Modal -->
+        <div class="modal-bg" id="roleModal">
+          <div class="modal">
+            <button class="modal-close" onclick="closeRoleModal()">✕</button>
+            <h3>✏️ Change Role</h3>
+            <form method="POST">
+              <input type="hidden" name="action" value="change_role">
+              <input type="hidden" name="uid"    id="modalUid">
+              <div class="form-group">
+                <label class="form-label">New Role</label>
+                <select name="role" id="modalRole" class="form-select">
+                  <option value="superadmin">👑 Super Admin</option>
+                  <option value="admin">🛡️ Admin</option>
+                  <option value="moderator">🔰 Moderator</option>
+                </select>
+              </div>
+              <button type="submit" class="btn btn-blue">💾 Save Role</button>
+            </form>
+          </div>
+        </div>
+        <script>
+        function openChangeRole(uid, role) {{
+          document.getElementById('modalUid').value = uid;
+          document.getElementById('modalRole').value = role;
+          document.getElementById('roleModal').classList.add('open');
+        }}
+        function closeRoleModal() {{
+          document.getElementById('roleModal').classList.remove('open');
+        }}
+        document.getElementById('roleModal').addEventListener('click', function(e) {{
+          if (e.target === this) closeRoleModal();
+        }});
+        </script>"""
+        return render_page(content, page="admins")
+
+    # ── JSON API: get admin list (bot.py calls this to check roles) ─
+    @flask_app.route("/admin/api/admins")
+    @login_required
+    def api_admins():
+        conn = db()
+        try:
+            cur = conn.cursor()
+            _ensure_admins_table(cur)
+            conn.commit()
+        except Exception:
+            pass
+        rows = _safe_query(conn, "SELECT user_id, username, role FROM bot_admins ORDER BY added_at")
+        conn.close()
+        return jsonify([dict(r) for r in rows])
 
     logger.info("✅ Admin dashboard registered at /admin")
