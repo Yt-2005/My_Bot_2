@@ -1980,29 +1980,6 @@
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 """
 database.py — Supabase / PostgreSQL database layer
 Provides:
@@ -2703,3 +2680,133 @@ def get_db_stats() -> dict:
     finally:
         conn.close()
     return stats
+
+# ─────────────────────────────────────────────────────────────────
+# MISSING ALIASES & HELPERS (used by bot.py and handlers)
+# ─────────────────────────────────────────────────────────────────
+
+from contextlib import contextmanager
+
+@contextmanager
+def get_conn():
+    """
+    Context-manager wrapper around get_connection().
+    Usage:
+        with get_conn() as conn:
+            conn.cursor().execute(...)
+            conn.commit()
+    """
+    conn = get_connection()
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def ensure_user(user_id: int, username: str = None, language: str = "km") -> dict:
+    """
+    Ensure a user row exists; create one if not.
+    Returns the user dict.
+    Alias for get_or_create_user — used by handlers/core.py and others.
+    """
+    return get_or_create_user(user_id, username=username, language=language)
+
+
+def send_reminders_db(hour: str) -> list:
+    """
+    Return list of user_ids who have daily_reminder=True and
+    whose reminder_time starts with the given hour (e.g. '08').
+    Used by bot.py job-queue send_reminders().
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT user_id FROM users "
+            "WHERE daily_reminder = TRUE AND reminder_time LIKE %s",
+            (f"{hour}:%",),
+        )
+        rows = cur.fetchall()
+        return [r["user_id"] for r in rows]
+    except Exception as e:
+        logger.warning(f"send_reminders_db error: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def get_user_info(user_id: int) -> Optional[dict]:
+    """
+    Return a user dict enriched with total_spent and expense_count.
+    Used by /userinfo admin command.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
+        user = cur.fetchone()
+        if not user:
+            return None
+        user = dict(user)
+        cur.execute(
+            "SELECT COALESCE(SUM(amount), 0) AS total_spent, COUNT(*) AS expense_count "
+            "FROM expenses WHERE user_id = %s",
+            (user_id,),
+        )
+        stats = cur.fetchone()
+        user["total_spent"] = float(stats["total_spent"]) if stats else 0.0
+        user["expense_count"] = stats["expense_count"] if stats else 0
+        return user
+    except Exception as e:
+        logger.warning(f"get_user_info error: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def get_bot_stats() -> dict:
+    """
+    Return high-level bot stats dict for /botstats command.
+    Keys: total_users, new_today, total_spent, total_expenses,
+          total_notes, errors, banned, active_30d
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+
+        def _one(sql):
+            cur.execute(sql)
+            row = cur.fetchone()
+            return list(row.values())[0] if row else 0
+
+        total_users    = _one("SELECT COUNT(*) AS c FROM users")
+        new_today      = _one("SELECT COUNT(*) AS c FROM users WHERE created_at::date = CURRENT_DATE")
+        total_spent    = _one("SELECT COALESCE(SUM(amount), 0) AS c FROM expenses")
+        total_expenses = _one("SELECT COUNT(*) AS c FROM expenses")
+        total_notes    = _one("SELECT COUNT(*) AS c FROM notes")
+        errors         = _one("SELECT COUNT(*) AS c FROM error_logs")
+        banned         = _one("SELECT COUNT(*) AS c FROM banned_users")
+        active_30d     = _one(
+            "SELECT COUNT(DISTINCT user_id) AS c FROM expenses "
+            "WHERE created_at >= NOW() - INTERVAL '30 days'"
+        )
+
+        return {
+            "total_users":    total_users,
+            "new_today":      new_today,
+            "total_spent":    float(total_spent),
+            "total_expenses": total_expenses,
+            "total_notes":    total_notes,
+            "errors":         errors,
+            "banned":         banned,
+            "active_30d":     active_30d,
+        }
+    except Exception as e:
+        logger.warning(f"get_bot_stats error: {e}")
+        return {k: 0 for k in ["total_users","new_today","total_spent",
+                                "total_expenses","total_notes","errors","banned","active_30d"]}
+    finally:
+        conn.close()
