@@ -84,8 +84,8 @@ from handlers.pdf_handler import (
 )
 from handlers.khmer_calendar_handler import (
     khmer_calendar_cmd, khmer_calendar_callback,
-    calendar_convert_receive,
-    CALENDAR_CONVERT_WAIT,
+    calendar_convert_receive, calendar_search_receive,
+    CALENDAR_CONVERT_WAIT, CALENDAR_SEARCH_WAIT,
 )
 
 # ── NEW: Extra admin commands callable from Telegram ──
@@ -469,6 +469,7 @@ def build_app():
         ],
         states={
             CALENDAR_CONVERT_WAIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, calendar_convert_receive)],
+            CALENDAR_SEARCH_WAIT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, calendar_search_receive)],
         },
         fallbacks=fallbacks,
         allow_reentry=True,

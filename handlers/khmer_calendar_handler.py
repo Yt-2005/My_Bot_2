@@ -525,8 +525,8 @@ def format_seil_view() -> str:
                 day_month += "  _(ខែ២៩ថ្ងៃ)_"
 
             lines.append(
-                f"🙏  *ថ្ងៃសីល* — {moon_label}\n"
-                f"    {badge}  ·  {wday_kh} {to_khmer_num(check.day)} {month_kh}\n"
+                f"🙏 *ថ្ងៃសីល* — {moon_label}\n"
+                f"📅 {wday_kh} {to_khmer_num(check.day)} {month_kh}\n"
                 f"    {day_month}"
             )
             found += 1
@@ -539,6 +539,7 @@ def format_seil_view() -> str:
         "🙏  *ថ្ងៃសីល — Buddhist Precept Days*\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         + "\n\n".join(lines)
+        + "\n"
     )
 
 
