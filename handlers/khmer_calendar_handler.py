@@ -16,6 +16,7 @@ import calendar as cal_mod
 from datetime import datetime, date, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
+import khmerdate as _khmerdate_lib
 
 logger = logging.getLogger(__name__)
 
@@ -72,205 +73,87 @@ KHMER_ROCH_DAYS = [
 
 
 # ══════════════════════════════════════════════════════════════════
-# CHHANKITEK ALGORITHM  (same as khmer-lunar-calendar.com)
-# Based on the algorithm by Phylypo Tum (Cam-CC) /
-# ThyrithSor/momentkh, accurate Khmer lunisolar calendar
+# CHHANKITEK ALGORITHM — powered by official `khmerdate` library
+# pip install khmerdate
 # ══════════════════════════════════════════════════════════════════
 
-# Epoch: Jan 1, 1970 = ១ (waxing) of Hatthayos month?
-# We use the proven reference constants from the Chhankitek algorithm:
-# A Khmer lunar year (Chhankitek) = 354 days (regular) or 384 days (leap)
-# The algorithm works by counting total Khmer lunar days since a known epoch.
+# Map lunar day strings returned by khmerdate → numeric phase_day + moon_phase
+_KERT_STR_TO_NUM = {f"{n}កើត": n for n in range(1, 16)}
+_ROCH_STR_TO_NUM = {f"{n}រោច": n for n in range(1, 16)}
+# Also handle Khmer-numeral strings from the library
+_KH_DIGITS_MAP = {"០":0,"១":1,"២":2,"៣":3,"៤":4,"៥":5,"៦":6,"៧":7,"៨":8,"៩":9}
+def _kh_to_int(s: str) -> int:
+    return int(''.join(str(_KH_DIGITS_MAP[c]) for c in s if c in _KH_DIGITS_MAP))
 
-_LUNAR_MONTHS_PER_YEAR = 12
-_DAYS_PER_LUNAR_YEAR   = 354        # regular year
-_DAYS_PER_LEAP_YEAR    = 384        # leap year (extra month)
+def _parse_lunar_day(day_str: str):
+    """Return (phase_day:int, moon_phase:int)  0=kert 1=roch"""
+    if "កើត" in day_str:
+        return _kh_to_int(day_str.replace("កើត", "")), 0
+    if "រោច" in day_str:
+        return _kh_to_int(day_str.replace("រោច", "")), 1
+    return 1, 0  # fallback
 
-# Known anchor: Khmer lunar day 1 of month Meak (index 2), BE 2500
-# corresponds to Gregorian January 26, 1957 (verified against Cam-CC)
-_EPOCH_GREGORIAN   = date(1957, 1, 26)
-_EPOCH_LUNAR_MONTH = 2     # មាឃ  (index in KHMER_LUNAR_MONTHS)
-_EPOCH_LUNAR_YEAR  = 2500  # Buddhist Era
-
-# Synodic month (mean) in days — used for month-length determination
-_SYNODIC = 29.530588853
-
-# True epoch from @thyrith/momentkh v3 (zero-based lunar day counter):
-# The library counts total lunar days from its own internal epoch.
-# We use the same approach: compute total synodic months elapsed, then
-# determine current month and day within that month using the Metonic-like
-# cycle embedded in the Chhankitek system.
-#
-# After extensive cross-validation against khmer-lunar-calendar.com for
-# dates 2020-2026, the correct reference new moon is:
-#   Gregorian 2000-01-06  →  lunar day 1, waxing, month មិគសិរ
-#   This is consistent with @thyrith/momentkh and cam-cc.org
-#
-# The KEY difference from the broken v2 code:
-#   v2 used simple (cycle % 2) parity for month length → WRONG (drifts)
-#   v3 uses the true Chhankitek leap-month calendar table (Avoman system)
-
-# Chhankitek uses a 19-year Metonic cycle with 7 leap years.
-# Leap years in a 19-year cycle (0-indexed positions where a 13th month is inserted):
-# positions 2, 5, 7, 10, 13, 15, 18  — the "embolismic" years
-_LEAP_YEAR_POSITIONS = {2, 5, 7, 10, 13, 15, 18}
-
-# A Khmer lunar year index (mod 19) determines if it's a leap year.
-# BE 2544 (= year 2000 CE, after April) was position 0 in the Metonic cycle.
-_METONIC_BASE_BE = 2544
-
-def _is_khmer_leap_lunar_year(be_year: int) -> bool:
-    """Return True if the given Buddhist Era year has 13 lunar months."""
-    pos = (be_year - _METONIC_BASE_BE) % 19
-    return pos in _LEAP_YEAR_POSITIONS
-
-
-def _months_in_khmer_be_year(be_year: int) -> int:
-    return 13 if _is_khmer_leap_lunar_year(be_year) else 12
-
-
-def _days_in_khmer_lunar_month(year_be: int, month_index: int) -> int:
-    """
-    Return the number of days in a given Khmer lunar month.
-    Odd-indexed months (0-based within the year, 0=first month of year) = 29 days
-    Even-indexed = 30 days.
-    The leap month (index 12 or 13) always has 30 days.
-    This matches the Chhankitek alternating rule used by cam-cc and momentkh.
-    """
-    if month_index >= 12:
-        return 30
-    return 29 if (month_index % 2 == 1) else 30
-
-
-# ── Total days from a fixed reference epoch to the start of BE year/month ──
-# Reference: BE 2484 month 0 (មិគសិរ) day 1 = Jan 26, 1941 (pre-validated)
-# Using the momentkh-compatible epoch:
-_REF_GREG = date(1941, 1, 26)   # Gregorian date of day 1, month 0, BE 2484
-_REF_BE   = 2484
-_REF_MON  = 0  # month index within year (0 = មិគសិរ)
-
-
-def _total_lunar_days_to_epoch() -> int:
-    """Total lunar days from the absolute start to our reference epoch (= 0)."""
-    return 0
-
-
-def _lunar_days_since_ref(target_be: int, target_mon_in_year: int, target_day: int) -> int:
-    """Count total lunar days from _REF_GREG epoch to a given lunar date."""
-    days = 0
-    be = _REF_BE
-    m = _REF_MON
-
-    while be < target_be or (be == target_be and m < target_mon_in_year):
-        months_this_year = _months_in_khmer_be_year(be)
-        days += _days_in_khmer_lunar_month(be, m)
-        m += 1
-        if m >= months_this_year:
-            m = 0
-            be += 1
-
-    days += target_day - 1
-    return days
-
-
-# ── The main conversion: Gregorian → Khmer lunar ──────────────────────────
 
 def gregorian_to_lunar(d: date) -> dict:
     """
-    Convert Gregorian date to Khmer lunar date using the Chhankitek algorithm.
-    Returns a dict matching the structure used throughout the handler.
+    Convert Gregorian date → Khmer lunar date.
+    Uses the official `khmerdate` library (Chhankitek / Phylypo Tum algorithm).
     """
-    # Count Gregorian days since reference epoch
-    greg_days = (d - _REF_GREG).days
+    raw = _khmerdate_lib.gregorian_to_khmer_lunar(d.day, d.month, d.year)
+    day_str   = raw["lunar_day"]    # e.g. "១៤កើត"
+    month_name = raw["lunar_month"] # e.g. "ពិសាខ"
+    be_str    = raw["lunar_year"]   # e.g. "២៥៧០"
 
-    # Walk through lunar months until we've consumed all days
-    be_year = _REF_BE
-    mon_in_year = _REF_MON
-    remaining = greg_days
+    phase_day, moon_phase = _parse_lunar_day(day_str)
+    be_year = _kh_to_int(be_str)
 
-    while True:
-        months_in_year = _months_in_khmer_be_year(be_year)
-        month_len = _days_in_khmer_lunar_month(be_year, mon_in_year)
-        if remaining < month_len:
-            break
-        remaining -= month_len
-        mon_in_year += 1
-        if mon_in_year >= months_in_year:
-            mon_in_year = 0
-            be_year += 1
+    # lunar_day_1based: kert 1-15, roch 16-29/30
+    lunar_day_1based = phase_day if moon_phase == 0 else phase_day + 15
 
-    lunar_day_1based = remaining + 1  # 1-indexed day within month
-    month_len = _days_in_khmer_lunar_month(be_year, mon_in_year)
+    # Month length: check tomorrow — if tomorrow is 1 kert of same or new month
+    # we detect it below; approximate month_len by scanning ahead
+    tmr_raw = _khmerdate_lib.gregorian_to_khmer_lunar(
+        (d + timedelta(days=1)).day, (d + timedelta(days=1)).month, (d + timedelta(days=1)).year
+    )
+    tmr_pd, tmr_mp = _parse_lunar_day(tmr_raw["lunar_day"])
+    tmr_month = tmr_raw["lunar_month"]
 
-    # Map month index within year to the lunar month name index
-    # The Khmer lunar year starts with មិគសិរ (index 0 in KHMER_LUNAR_MONTHS)
-    # Month-in-year 0 = មិគសិរ, 1 = បុស្ស, ..., 6 = ជេស្ឋ, 7 = អាសាឍ (or leap)
-    # Leap year: month 6 = បឋមាសាឍ (12), month 7 = ទុតិយាសាឍ (13), rest shifts
-    months_in_year = _months_in_khmer_be_year(be_year)
-    if months_in_year == 13:
-        # Leap year: index 0-5 normal, 6=Pathamasadh(12), 7=Tutiyasadh(13), 8-12=normal 7-11
-        if mon_in_year < 6:
-            lunar_month_name_idx = mon_in_year
-        elif mon_in_year == 6:
-            lunar_month_name_idx = 12  # បឋមាសាឍ
-        elif mon_in_year == 7:
-            lunar_month_name_idx = 13  # ទុតិយាសាឍ
-        else:
-            lunar_month_name_idx = mon_in_year - 1  # shift back
-    else:
-        lunar_month_name_idx = mon_in_year
-
-    month_name = KHMER_LUNAR_MONTHS[lunar_month_name_idx]
-
-    # Waxing (កើត) days 1-15, Waning (រោច) days 1-(14 or 15)
-    if lunar_day_1based <= 15:
-        moon_phase = 0   # Waxing / កើត
-        phase_day  = lunar_day_1based
-        day_str    = KHMER_KERT_DAYS[phase_day]
-    else:
-        moon_phase = 1   # Waning / រោច
-        phase_day  = lunar_day_1based - 15
-        day_str    = KHMER_ROCH_DAYS[phase_day] if phase_day <= 15 else KHMER_ROCH_DAYS[15]
+    is_last_roch = (moon_phase == 1) and (tmr_mp == 0) and (tmr_pd == 1)
+    # month_len: if last roch = phase_day, month = 15+phase_day days
+    month_len = 15 + phase_day if is_last_roch else (29 if phase_day == 14 and moon_phase == 1 else 30)
 
     # Moon emoji & phase label
     if moon_phase == 0:
         if phase_day == 15:
-            moon_emoji = "🌕"
-            phase = "🌕 ១៥កើត — ព្រះច័ន្ទពេញ"
+            moon_emoji, phase = "🌕", "🌕 ១៥កើត — ព្រះច័ន្ទពេញ"
         elif phase_day == 8:
-            moon_emoji = "🌓"
-            phase = "🌓 ៨កើត"
+            moon_emoji, phase = "🌓", "🌓 ៨កើត"
         elif phase_day < 8:
-            moon_emoji = "🌒"
-            phase = f"🌒 {day_str}"
+            moon_emoji, phase = "🌒", f"🌒 {day_str}"
         else:
-            moon_emoji = "🌔"
-            phase = f"🌔 {day_str}"
+            moon_emoji, phase = "🌔", f"🌔 {day_str}"
     else:
         if phase_day == 8:
-            moon_emoji = "🌗"
-            phase = "🌗 ៨រោច"
-        elif phase_day >= (month_len - 15):  # last day of roch
-            # detect if this is truly the last day
-            moon_emoji = "🌑"
-            phase = f"🌑 {day_str} — ច័ន្ទថ្មី (ខ្មៅ)"
+            moon_emoji, phase = "🌗", "🌗 ៨រោច"
+        elif is_last_roch:
+            moon_emoji, phase = "🌑", f"🌑 {day_str} — ច័ន្ទថ្មី (ខ្មៅ)"
         elif phase_day < 8:
-            moon_emoji = "🌖"
-            phase = f"🌖 {day_str}"
+            moon_emoji, phase = "🌖", f"🌖 {day_str}"
         else:
-            moon_emoji = "🌘"
-            phase = f"🌘 {day_str}"
+            moon_emoji, phase = "🌘", f"🌘 {day_str}"
 
-    # ថ្ងៃសីល detection:
-    # Waxing day 8, Waxing day 15, Waning day 8, AND last day of waning
-    tomorrow = d + timedelta(days=1)
-    tmr = _quick_lunar(tomorrow)
-    is_last_roch = (moon_phase == 1) and (tmr["moon_phase"] == 0) and (tmr["phase_day"] == 1)
+    # ថ្ងៃសីល: 8kert, 15kert, 8roch, last-roch
     is_seil = (
         (moon_phase == 0 and phase_day in {8, 15}) or
         (moon_phase == 1 and phase_day == 8) or
         is_last_roch
     )
+
+    # month_index: find in KHMER_LUNAR_MONTHS list
+    try:
+        month_index = KHMER_LUNAR_MONTHS.index(month_name)
+    except ValueError:
+        month_index = 0
 
     return {
         "day":          day_str,
@@ -278,7 +161,7 @@ def gregorian_to_lunar(d: date) -> dict:
         "phase_day":    phase_day,
         "moon_phase":   moon_phase,
         "month":        month_name,
-        "month_index":  lunar_month_name_idx,
+        "month_index":  month_index,
         "month_len":    month_len,
         "year_be":      be_year,
         "phase":        phase,
@@ -289,25 +172,10 @@ def gregorian_to_lunar(d: date) -> dict:
 
 
 def _quick_lunar(d: date) -> dict:
-    """Lightweight version returning only phase info (avoids infinite recursion)."""
-    greg_days = (d - _REF_GREG).days
-    be_year = _REF_BE
-    mon_in_year = _REF_MON
-    remaining = greg_days
-    while True:
-        months_in_year = _months_in_khmer_be_year(be_year)
-        month_len = _days_in_khmer_lunar_month(be_year, mon_in_year)
-        if remaining < month_len:
-            break
-        remaining -= month_len
-        mon_in_year += 1
-        if mon_in_year >= months_in_year:
-            mon_in_year = 0
-            be_year += 1
-    lunar_day = remaining + 1
-    moon_phase = 0 if lunar_day <= 15 else 1
-    phase_day  = lunar_day if lunar_day <= 15 else lunar_day - 15
-    return {"moon_phase": moon_phase, "phase_day": phase_day}
+    """Return only phase_day + moon_phase for a date (used in is_last_roch check)."""
+    raw = _khmerdate_lib.gregorian_to_khmer_lunar(d.day, d.month, d.year)
+    pd, mp = _parse_lunar_day(raw["lunar_day"])
+    return {"moon_phase": mp, "phase_day": pd}
 
 
 # ══════════════════════════════════════════════════════════════════
