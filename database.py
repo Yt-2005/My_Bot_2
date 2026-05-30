@@ -32,6 +32,7 @@ def init_db():
             username TEXT,
             language TEXT,
             budget REAL DEFAULT 0,
+            pin TEXT,
             daily_reminder BOOLEAN DEFAULT FALSE,
             reminder_time TEXT DEFAULT '09:00',
             created_at TIMESTAMPTZ DEFAULT NOW()
@@ -90,6 +91,11 @@ def init_db():
         )
         """
     ]
+    # Migrations for columns added after initial deploy
+    migrations = [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS pin TEXT",
+    ]
+
     with db() as conn:
         with conn.cursor() as cur:
             for command in commands:
@@ -97,6 +103,11 @@ def init_db():
                     cur.execute(command)
                 except Exception as e:
                     logger.warning(f"Init table error (maybe already exists): {e}")
+            for migration in migrations:
+                try:
+                    cur.execute(migration)
+                except Exception as e:
+                    logger.warning(f"Migration error: {e}")
             conn.commit()
 
 # ── Helper functions ───────────────────────────────────────────────
@@ -355,6 +366,183 @@ def clear_chat_history(user_id):
             (user_id,),
         )
         conn.commit()
+
+
+# ── Expense functions ─────────────────────────────────────────────
+def add_expense(user_id, category, amount, note="", tag="", date=None):
+    """Add an expense record. Returns the new expense ID."""
+    if date is None:
+        from datetime import date as date_type
+        date = date_type.today()
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO expenses (user_id, category, amount, note, tag, date)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (user_id, category, amount, note, tag, date)
+        )
+        expense_id = cur.fetchone()['id']
+        conn.commit()
+        return expense_id
+
+def delete_expense(expense_id, user_id):
+    """Delete an expense if it belongs to the user. Returns True if deleted."""
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            DELETE FROM expenses
+            WHERE id = %s AND user_id = %s
+            """,
+            (expense_id, user_id)
+        )
+        deleted = cur.rowcount > 0
+        conn.commit()
+        return deleted
+
+def get_today(user_id):
+    """Get all expenses for the user for today."""
+    with db() as conn:
+        return _safe_query(
+            conn,
+            """
+            SELECT id, category, amount, note, tag, date
+            FROM expenses
+            WHERE user_id = %s AND date = CURRENT_DATE
+            ORDER BY id DESC
+            """,
+            (user_id,)
+        )
+
+def get_monthly(user_id, year=None, month=None):
+    """Get all expenses for the user for a given month (defaults to current)."""
+    if year is None or month is None:
+        from datetime import date
+        today = date.today()
+        year, month = today.year, today.month
+    with db() as conn:
+        return _safe_query(
+            conn,
+            """
+            SELECT id, category, amount, note, tag, date
+            FROM expenses
+            WHERE user_id = %s
+              AND EXTRACT(YEAR FROM date) = %s
+              AND EXTRACT(MONTH FROM date) = %s
+            ORDER BY date DESC, id DESC
+            """,
+            (user_id, year, month)
+        )
+
+def get_monthly_total(user_id, year=None, month=None):
+    """Get total amount spent for a given month (defaults to current)."""
+    if year is None or month is None:
+        from datetime import date
+        today = date.today()
+        year, month = today.year, today.month
+    with db() as conn:
+        result = _safe_one(
+            conn,
+            """
+            SELECT COALESCE(SUM(amount), 0) AS total
+            FROM expenses
+            WHERE user_id = %s
+              AND EXTRACT(YEAR FROM date) = %s
+              AND EXTRACT(MONTH FROM date) = %s
+            """,
+            (user_id, year, month)
+        )
+        return float(result['total']) if result else 0.0
+
+def get_by_date(user_id, target_date):
+    """Get all expenses for a specific date."""
+    with db() as conn:
+        return _safe_query(
+            conn,
+            """
+            SELECT id, category, amount, note, tag, date
+            FROM expenses
+            WHERE user_id = %s AND date = %s
+            ORDER BY id DESC
+            """,
+            (user_id, target_date)
+        )
+
+def get_by_tag(user_id, tag):
+    """Get all expenses for a specific tag."""
+    with db() as conn:
+        return _safe_query(
+            conn,
+            """
+            SELECT id, category, amount, note, tag, date
+            FROM expenses
+            WHERE user_id = %s AND tag = %s
+            ORDER BY date DESC, id DESC
+            """,
+            (user_id, tag)
+        )
+
+def get_recurring(user_id):
+    """Get expenses tagged as 'recurring' for the user."""
+    with db() as conn:
+        return _safe_query(
+            conn,
+            """
+            SELECT id, category, amount, note, tag, date
+            FROM expenses
+            WHERE user_id = %s AND tag = 'recurring'
+            ORDER BY date DESC, id DESC
+            """,
+            (user_id,)
+        )
+
+def get_budget(user_id):
+    """Get the budget for a user. Returns 0 if not set."""
+    with db() as conn:
+        result = _safe_one(
+            conn,
+            "SELECT budget FROM users WHERE user_id = %s",
+            (user_id,)
+        )
+        return float(result['budget']) if result else 0.0
+
+def set_budget(user_id, amount):
+    """Set the monthly budget for a user."""
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO users (user_id, budget) VALUES (%s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET budget = EXCLUDED.budget
+            """,
+            (user_id, amount)
+        )
+        conn.commit()
+
+def get_pin(user_id):
+    """Get the PIN for a user (returns None if not set)."""
+    with db() as conn:
+        result = _safe_one(
+            conn,
+            "SELECT pin FROM users WHERE user_id = %s",
+            (user_id,)
+        )
+        if result and 'pin' in result:
+            return result.get('pin')
+        return None
+
+def get_language(user_id):
+    """Get the language preference for a user (defaults to 'en')."""
+    with db() as conn:
+        result = _safe_one(
+            conn,
+            "SELECT language FROM users WHERE user_id = %s",
+            (user_id,)
+        )
+        return result['language'] if result and result.get('language') else 'en'
 
 
 # For compatibility with dashboard.py's db() function (if needed)
