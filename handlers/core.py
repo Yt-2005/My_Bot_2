@@ -4,7 +4,8 @@ All menu_ callbacks handled here with full Back button navigation.
 """
 
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode
+from telegram.constants import ParseMode
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import ensure_user
 from utils import main_menu_keyboard, back_button
