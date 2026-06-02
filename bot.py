@@ -47,7 +47,7 @@ from handlers.ai_handler import (
     ai_menu_callback,
 )
 from handlers.notes_handler import (
-    note_cmd, note_add_start, note_add_receive,
+    note_cmd, note_add_start, note_add_receive, note_add_receive_caption,
     note_list, note_delete_start, delete_note_callback,
     note_callback,
     ADDING_NOTE, ADDING_NOTE_CAPTION,
