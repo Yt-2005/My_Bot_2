@@ -145,6 +145,10 @@ def delete_note(note_id, user_id):
         conn.commit()
         return deleted
 
+def get_note(note_id, user_id):
+    with db() as conn:
+        return _safe_one(conn, "SELECT id, content, image_data, image_filename, created_at FROM notes WHERE id = %s AND user_id = %s", (note_id, user_id))
+
 def count_notes(user_id):
     with db() as conn:
         result = _safe_one(conn, "SELECT COUNT(*) AS c FROM notes WHERE user_id = %s", (user_id,))

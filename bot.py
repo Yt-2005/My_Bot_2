@@ -48,7 +48,7 @@ from handlers.ai_handler import (
 )
 from handlers.notes_handler import (
     note_cmd, note_add_start, note_add_receive, note_add_receive_caption,
-    note_list, note_delete_start, delete_note_callback,
+    note_list, note_delete_start, delete_note_callback, note_show_callback,
     note_callback,
     ADDING_NOTE, ADDING_NOTE_CAPTION,
 )
@@ -923,6 +923,7 @@ def build_app():
     app.add_handler(CallbackQueryHandler(reimagine_callback,         pattern=r"^reimagine\|"))
     app.add_handler(CallbackQueryHandler(upscale_pending_callback,   pattern=r"^upscale_pending$"))
     app.add_handler(CallbackQueryHandler(delete_note_callback,       pattern=r"^delnote\|"))
+    app.add_handler(CallbackQueryHandler(note_show_callback,          pattern=r"^shownote\|"))
     app.add_handler(CallbackQueryHandler(note_callback,              pattern=r"^note_"))
     app.add_handler(CallbackQueryHandler(auto_pdf_extract_callback,  pattern=r"^pdf_auto_extract$"))
     app.add_handler(CallbackQueryHandler(pdf_callback,               pattern=r"^pdf_(text|image|extract)$"))

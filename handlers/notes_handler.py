@@ -10,7 +10,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from telegram.constants import ParseMode
 
-from database import add_note, get_notes, delete_note, count_notes, ensure_user, log_error
+from database import add_note, get_note, get_notes, delete_note, count_notes, ensure_user, log_error
 from utils import notes_keyboard, back_button, is_rate_limited
 from config import MAX_NOTES_PER_USER
 
@@ -368,6 +368,49 @@ async def note_delete_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def note_show_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+
+    try:
+        _, note_id_str = query.data.split("|")
+        note_id = int(note_id_str)
+    except (ValueError, IndexError):
+        await query.answer("Invalid note ID", show_alert=True)
+        return
+
+    note = get_note(note_id, uid)
+    if not note:
+        await query.answer("❌ Note not found.", show_alert=True)
+        return
+
+    raw = note["created_at"]
+    date = raw.strftime("%Y-%m-%d %H:%M") if hasattr(raw, "strftime") else str(raw)[:16]
+
+    if note["image_data"]:
+        caption = f"*Note #{note['id']}* — {date}\n\n"
+        if note["content"]:
+            caption += f"📝 {note['content']}"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to List", callback_data="note_list")],
+        ])
+        await query.message.reply_photo(
+            photo=note["image_data"],
+            filename=note["image_filename"] or f"note_{note['id']}.jpg",
+            caption=caption,
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+    else:
+        text = f"*Note #{note['id']}* — {date}\n\n"
+        text += note["content"] or "(Empty)"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to List", callback_data="note_list")],
+        ])
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+
+
 async def delete_note_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Handle tapping a note to delete it."""
     query = update.callback_query
@@ -462,11 +505,11 @@ async def note_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
             if len(text) > 4000:
                 text = text[:3900] + "\n\n_...trimmed_"
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🗑️ Delete a Note", callback_data="note_delete")],
-                [InlineKeyboardButton("🔙 Back",           callback_data="menu_notes")],
-            ])
+            kb = notes_keyboard(notes)
             await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    elif data == "shownote":
+        await note_show_callback(update, ctx)
 
     elif data == "note_delete":
         notes = get_notes(uid)
