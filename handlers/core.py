@@ -4,7 +4,7 @@ All menu_ callbacks handled here with full Back button navigation.
 """
 
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode
 from telegram.ext import ContextTypes, ConversationHandler
 from database import ensure_user
 from utils import main_menu_keyboard, back_button
@@ -227,7 +227,7 @@ async def _menu_notes(query, ctx):
         "• Add, list, or delete notes\n"
         "• Send photos/images to save as image notes\n"
         "• Add captions to label your images",
-        parse_mode=ParseMode.MARKDOWN,
+        parse_mode="Markdown",
         reply_markup=kb,
     )
 
