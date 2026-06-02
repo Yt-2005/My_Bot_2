@@ -50,7 +50,7 @@ from handlers.notes_handler import (
     note_cmd, note_add_start, note_add_receive,
     note_list, note_delete_start, delete_note_callback,
     note_callback,
-    ADDING_NOTE, DELETING_NOTE,
+    ADDING_NOTE, ADDING_NOTE_CAPTION,
 )
 from handlers.expense_handler import (
     add_start, choose_category, enter_amount, enter_note, enter_tag,
@@ -766,8 +766,11 @@ def build_app():
     notes_conv = ConversationHandler(
         entry_points=[CommandHandler("note", note_cmd)],
         states={
-            ADDING_NOTE:   [MessageHandler(filters.TEXT & ~filters.COMMAND, note_add_receive)],
-            DELETING_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, note_delete_start)],
+            ADDING_NOTE:   [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, note_add_receive),
+                MessageHandler(filters.PHOTO, note_add_receive)
+            ],
+            ADDING_NOTE_CAPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, note_add_receive_caption)],
         },
         fallbacks=fallbacks,
         allow_reentry=True,

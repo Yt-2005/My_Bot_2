@@ -25,39 +25,42 @@ def db():
 def init_db():
     commands = [
         """CREATE TABLE IF NOT EXISTS users (
-            user_id BIGINT PRIMARY KEY, username TEXT,
-            language TEXT DEFAULT 'en', budget REAL DEFAULT 0, pin TEXT,
-            daily_reminder BOOLEAN DEFAULT FALSE, reminder_time TEXT DEFAULT '09:00',
-            created_at TIMESTAMPTZ DEFAULT NOW()
-        )""",
+             user_id BIGINT PRIMARY KEY, username TEXT,
+             language TEXT DEFAULT 'en', budget REAL DEFAULT 0, pin TEXT,
+             daily_reminder BOOLEAN DEFAULT FALSE, reminder_time TEXT DEFAULT '09:00',
+             created_at TIMESTAMPTZ DEFAULT NOW()
+         )""",
         """CREATE TABLE IF NOT EXISTS notes (
-            id BIGSERIAL PRIMARY KEY,
-            user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
-            content TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW()
-        )""",
+             id BIGSERIAL PRIMARY KEY,
+             user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+             content TEXT,
+             image_data BYTEA,
+             image_filename TEXT,
+             created_at TIMESTAMPTZ DEFAULT NOW()
+         )""",
         """CREATE TABLE IF NOT EXISTS expenses (
-            id BIGSERIAL PRIMARY KEY,
-            user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
-            category TEXT, amount REAL, note TEXT, tag TEXT, date DATE
-        )""",
+             id BIGSERIAL PRIMARY KEY,
+             user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+             category TEXT, amount REAL, note TEXT, tag TEXT, date DATE
+         )""",
         """CREATE TABLE IF NOT EXISTS error_logs (
-            id BIGSERIAL PRIMARY KEY,
-            user_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
-            error_text TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW()
-        )""",
+             id BIGSERIAL PRIMARY KEY,
+             user_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
+             error_text TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW()
+         )""",
         """CREATE TABLE IF NOT EXISTS bot_admins (
-            user_id BIGINT PRIMARY KEY, username TEXT,
-            role TEXT NOT NULL DEFAULT 'admin', note TEXT,
-            added_at TIMESTAMPTZ DEFAULT NOW(), added_by TEXT DEFAULT 'dashboard'
-        )""",
+             user_id BIGINT PRIMARY KEY, username TEXT,
+             role TEXT NOT NULL DEFAULT 'admin', note TEXT,
+             added_at TIMESTAMPTZ DEFAULT NOW(), added_by TEXT DEFAULT 'dashboard'
+         )""",
         """CREATE TABLE IF NOT EXISTS banned_users (
-            user_id BIGINT PRIMARY KEY, banned_at TIMESTAMPTZ DEFAULT NOW()
-        )""",
+             user_id BIGINT PRIMARY KEY, banned_at TIMESTAMPTZ DEFAULT NOW()
+         )""",
         """CREATE TABLE IF NOT EXISTS chat_memory (
-            id BIGSERIAL PRIMARY KEY,
-            user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
-            message TEXT, is_bot BOOLEAN, created_at TIMESTAMPTZ DEFAULT NOW()
-        )""",
+             id BIGSERIAL PRIMARY KEY,
+             user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+             message TEXT, is_bot BOOLEAN, created_at TIMESTAMPTZ DEFAULT NOW()
+         )""",
     ]
     migrations = [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS pin TEXT",
@@ -65,6 +68,8 @@ def init_db():
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS budget REAL DEFAULT 0",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_reminder BOOLEAN DEFAULT FALSE",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_time TEXT DEFAULT '09:00'",
+        "ALTER TABLE notes ADD COLUMN IF NOT EXISTS image_data BYTEA",
+        "ALTER TABLE notes ADD COLUMN IF NOT EXISTS image_filename TEXT",
     ]
     with db() as conn:
         with conn.cursor() as cur:
@@ -112,17 +117,24 @@ def ensure_user(user_id, username=None):
 
 
 # ── Notes ──────────────────────────────────────────────────────────
-def add_note(user_id, content):
-    with db() as conn:
-        cur = conn.cursor()
-        cur.execute("INSERT INTO notes (user_id, content) VALUES (%s, %s) RETURNING id", (user_id, content))
-        note_id = cur.fetchone()['id']
-        conn.commit()
-        return note_id
+def add_note(user_id, content=None, image_data=None, image_filename=None):
+    try:
+        with db() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO notes (user_id, content, image_data, image_filename) VALUES (%s, %s, %s, %s) RETURNING id", 
+                (user_id, content, image_data, image_filename)
+            )
+            note_id = cur.fetchone()['id']
+            conn.commit()
+            return note_id
+    except Exception as e:
+        logger.error(f"Failed to add note for user {user_id}: {e}")
+        raise
 
 def get_notes(user_id):
     with db() as conn:
-        return _safe_query(conn, "SELECT id, content, created_at FROM notes WHERE user_id = %s ORDER BY created_at DESC", (user_id,))
+        return _safe_query(conn, "SELECT id, content, image_data, image_filename, created_at FROM notes WHERE user_id = %s ORDER BY created_at DESC", (user_id,))
 
 def delete_note(note_id, user_id):
     with db() as conn:

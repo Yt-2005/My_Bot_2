@@ -74,7 +74,10 @@ def _help_text() -> str:
         "  🖼 Image to PDF\n"
         "  📄 PDF to Text\n\n"
         "━━━ 📝 *Notes* ━━━\n"
-        "/note — Manage notes\n\n"
+        "/note — Manage notes (text or images)\n"
+        "  • Send text to save text notes\n"
+        "  • Send photos/images to save as image notes\n"
+        "  • Add captions to label your images\n\n"
         "━━━ 🗓 *Khmer Calendar* ━━━\n"
         "/calendar — ប្រតិទិនខ្មែរ\n\n"
         "━━━ ⚙️ *Settings* ━━━\n"
@@ -218,11 +221,13 @@ async def _menu_notes(query, ctx):
     ])
     await query.edit_message_text(
         "📝 *My Notes*\n\n"
-        "Save and manage your personal notes.\n\n"
+        "Save and manage your personal notes (text or images).\n\n"
         "Commands:\n"
         "• /note — Open notes menu\n"
-        "• Add, list, or delete notes",
-        parse_mode="Markdown",
+        "• Add, list, or delete notes\n"
+        "• Send photos/images to save as image notes\n"
+        "• Add captions to label your images",
+        parse_mode=ParseMode.MARKDOWN,
         reply_markup=kb,
     )
 
