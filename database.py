@@ -70,6 +70,7 @@ def init_db():
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_time TEXT DEFAULT '09:00'",
         "ALTER TABLE notes ADD COLUMN IF NOT EXISTS image_data BYTEA",
         "ALTER TABLE notes ADD COLUMN IF NOT EXISTS image_filename TEXT",
+        "ALTER TABLE notes ALTER COLUMN content DROP NOT NULL",
     ]
     with db() as conn:
         with conn.cursor() as cur:
