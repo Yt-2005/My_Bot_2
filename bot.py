@@ -49,8 +49,11 @@ from handlers.ai_handler import (
 from handlers.notes_handler import (
     note_cmd, note_add_start, note_add_receive, note_add_receive_caption,
     note_list, note_delete_start, delete_note_callback, note_show_callback,
+    note_search_start, note_search_receive,
+    note_edit_start, note_edit_receive, note_edit_save, edit_note_entry,
     note_callback,
     ADDING_NOTE, ADDING_NOTE_CAPTION,
+    SEARCHING_NOTES, EDITING_NOTE_ID, EDITING_NOTE_CONTENT,
 )
 from handlers.expense_handler import (
     add_start, choose_category, enter_amount, enter_note, enter_tag,
