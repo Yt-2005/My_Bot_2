@@ -46,7 +46,7 @@ from handlers.ai_handler import (
     roast_cmd,
     ai_menu_callback,
 )
-    from handlers.notes_handler import (
+from handlers.notes_handler import (
     note_cmd, note_add_start, note_add_receive,
     note_list, note_delete_start, delete_note_callback,
     note_callback,
