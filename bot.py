@@ -51,6 +51,7 @@ from handlers.notes_handler import (
     note_list, note_delete_start, delete_note_callback,
     note_callback,
     ADDING_NOTE, DELETING_NOTE,
+    SEARCHING_NOTES, EDITING_NOTE_ID, EDITING_NOTE_CONTENT,
 )
 from handlers.expense_handler import (
     add_start, choose_category, enter_amount, enter_note, enter_tag,
