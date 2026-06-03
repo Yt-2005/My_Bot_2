@@ -149,10 +149,29 @@ def get_note(note_id, user_id):
     with db() as conn:
         return _safe_one(conn, "SELECT id, content, image_data, image_filename, created_at FROM notes WHERE id = %s AND user_id = %s", (note_id, user_id))
 
+
+def update_note(note_id, user_id, content):
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE notes SET content = %s WHERE id = %s AND user_id = %s", (content, note_id, user_id))
+        updated = cur.rowcount > 0
+        conn.commit()
+        return updated
+
 def count_notes(user_id):
     with db() as conn:
         result = _safe_one(conn, "SELECT COUNT(*) AS c FROM notes WHERE user_id = %s", (user_id,))
         return result['c'] if result else 0
+
+
+def search_notes(user_id, query):
+    with db() as conn:
+        pattern = f"%{query}%"
+        return _safe_query(
+            conn,
+            "SELECT id, content, image_data, image_filename, created_at FROM notes WHERE user_id = %s AND (content ILIKE %s OR image_filename ILIKE %s) ORDER BY created_at DESC",
+            (user_id, pattern, pattern)
+        )
 
 
 # ── Error logging ──────────────────────────────────────────────────

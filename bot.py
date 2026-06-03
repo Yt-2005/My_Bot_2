@@ -768,9 +768,12 @@ def build_app():
         states={
             ADDING_NOTE:   [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, note_add_receive),
-                MessageHandler(filters.PHOTO, note_add_receive)
+                MessageHandler(filters.PHOTO | filters.Document.IMAGE, note_add_receive)
             ],
             ADDING_NOTE_CAPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, note_add_receive_caption)],
+            SEARCHING_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, note_search_receive)],
+            EDITING_NOTE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, note_edit_receive)],
+            EDITING_NOTE_CONTENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, note_edit_save)],
         },
         fallbacks=fallbacks,
         allow_reentry=True,
@@ -924,6 +927,7 @@ def build_app():
     app.add_handler(CallbackQueryHandler(upscale_pending_callback,   pattern=r"^upscale_pending$"))
     app.add_handler(CallbackQueryHandler(delete_note_callback,       pattern=r"^delnote\|"))
     app.add_handler(CallbackQueryHandler(note_show_callback,          pattern=r"^shownote\|"))
+    app.add_handler(CallbackQueryHandler(edit_note_entry,          pattern=r"^editnote\|"))
     app.add_handler(CallbackQueryHandler(note_callback,              pattern=r"^note_"))
     app.add_handler(CallbackQueryHandler(auto_pdf_extract_callback,  pattern=r"^pdf_auto_extract$"))
     app.add_handler(CallbackQueryHandler(pdf_callback,               pattern=r"^pdf_(text|image|extract)$"))

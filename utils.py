@@ -75,8 +75,8 @@ def image_style_keyboard(prompt: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-def notes_keyboard(notes: list) -> InlineKeyboardMarkup:
-    """Keyboard to show/delete individual notes."""
+def notes_keyboard(notes: list, show_edit: bool = False) -> InlineKeyboardMarkup:
+    """Keyboard to show/delete/edit individual notes."""
     buttons = []
     for note in notes[:20]:
         short = note["content"][:25] + ("…" if len(note["content"]) > 25 else "") if note["content"] else "(No text)"
@@ -85,7 +85,10 @@ def notes_keyboard(notes: list) -> InlineKeyboardMarkup:
             f"{label} {short}",
             callback_data=f"shownote|{note['id']}"
         )]
-        row.append(InlineKeyboardButton("🗑️", callback_data=f"delnote|{note['id']}"))
+        actions = [InlineKeyboardButton("🗑️", callback_data=f"delnote|{note['id']}")]
+        if show_edit:
+            actions.insert(0, InlineKeyboardButton("✏️", callback_data=f"editnote|{note['id']}"))
+        row.extend(actions)
         buttons.append(row)
     buttons.append([InlineKeyboardButton("🔙 Back", callback_data="menu_notes")])
     return InlineKeyboardMarkup(buttons)
