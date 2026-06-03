@@ -50,6 +50,7 @@ from handlers.notes_handler import (
     note_cmd, note_add_start, note_add_receive,
     note_list, note_delete_start, delete_note_callback,
     note_callback,
+    note_search_receive, note_edit_receive, note_edit_save,
     ADDING_NOTE, DELETING_NOTE,
     SEARCHING_NOTES, EDITING_NOTE_ID, EDITING_NOTE_CONTENT,
 )
