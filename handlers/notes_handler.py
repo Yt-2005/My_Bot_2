@@ -184,67 +184,51 @@ async def note_add_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Handle photo message
     elif update.message.photo:
         try:
-            # Get the largest available photo
             photo = update.message.photo[-1]
             file = await ctx.bot.get_file(photo.file_id)
-            image_data = await file.download_as_bytearray()
-            image_data = bytes(image_data)
-            
-            # Get file info
+            image_data = bytes(await file.download_as_bytearray())
             image_filename = f"photo_{photo.file_id}.jpg"
-            
-            # Optional: Ask for caption/description
-            ctx.user_data["pending_image"] = {
-                "data": image_data,
-                "filename": image_filename
-            }
-            
+            note_id = add_note(uid, content=None, image_data=image_data, image_filename=image_filename)
+            count = count_notes(uid)
             await update.message.reply_text(
-                "🖼 *Image received!*\n\n"
-                "Now you can add a caption/description for this image (optional):\n\n"
-                "_Send /skip to save without caption_",
-                parse_mode=ParseMode.MARKDOWN
+                f"✅ *Image Note #{note_id} saved successfully!*\n\n"
+                f"🖼 {image_filename}\n"
+                f"📊 Total notes: {count}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📋 View All",  callback_data="note_list"),
+                    InlineKeyboardButton("🔙 Menu",      callback_data="menu_main"),
+                ]])
             )
-            return ADDING_NOTE_CAPTION
+            return ConversationHandler.END
         except Exception as e:
-            logger.error(f"Failed to process photo: {e}")
-            await update.message.reply_text(
-                "❌ Failed to process image. Please try again.",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            logger.error(f"Failed to save photo note: {e}")
+            await update.message.reply_text("❌ Failed to save image. Please try again.", parse_mode=ParseMode.MARKDOWN)
             return ADDING_NOTE
-    
+
     # Handle document message (if it's an image)
     elif update.message.document and update.message.document.mime_type and update.message.document.mime_type.startswith("image/"):
         try:
-            # Get the document
             document = update.message.document
             file = await ctx.bot.get_file(document.file_id)
-            image_data = await file.download_as_bytearray()
-            image_data = bytes(image_data)
-            
-            # Use the original filename or generate one
+            image_data = bytes(await file.download_as_bytearray())
             image_filename = document.file_name or f"image_{document.file_id}"
-            
-            # Optional: Ask for caption/description
-            ctx.user_data["pending_image"] = {
-                "data": image_data,
-                "filename": image_filename
-            }
-            
+            note_id = add_note(uid, content=None, image_data=image_data, image_filename=image_filename)
+            count = count_notes(uid)
             await update.message.reply_text(
-                f"🖼 *Image received!* ({document.file_name or 'unnamed'})\n\n"
-                "Now you can add a caption/description for this image (optional):\n\n"
-                "_Send /skip to save without caption_",
-                parse_mode=ParseMode.MARKDOWN
+                f"✅ *Image Note #{note_id} saved successfully!*\n\n"
+                f"🖼 {image_filename}\n"
+                f"📊 Total notes: {count}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📋 View All",  callback_data="note_list"),
+                    InlineKeyboardButton("🔙 Menu",      callback_data="menu_main"),
+                ]])
             )
-            return ADDING_NOTE_CAPTION
+            return ConversationHandler.END
         except Exception as e:
-            logger.error(f"Failed to process image document: {e}")
-            await update.message.reply_text(
-                "❌ Failed to process image. Please try again.",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            logger.error(f"Failed to save image document: {e}")
+            await update.message.reply_text("❌ Failed to save image. Please try again.", parse_mode=ParseMode.MARKDOWN)
             return ADDING_NOTE
     
     else:

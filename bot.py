@@ -46,14 +46,11 @@ from handlers.ai_handler import (
     roast_cmd,
     ai_menu_callback,
 )
-from handlers.notes_handler import (
-    note_cmd, note_add_start, note_add_receive, note_add_receive_caption,
-    note_list, note_delete_start, delete_note_callback, note_show_callback,
-    note_search_start, note_search_receive,
-    note_edit_start, note_edit_receive, note_edit_save, edit_note_entry,
+    from handlers.notes_handler import (
+    note_cmd, note_add_start, note_add_receive,
+    note_list, note_delete_start, delete_note_callback,
     note_callback,
-    ADDING_NOTE, ADDING_NOTE_CAPTION,
-    SEARCHING_NOTES, EDITING_NOTE_ID, EDITING_NOTE_CONTENT,
+    ADDING_NOTE, DELETING_NOTE,
 )
 from handlers.expense_handler import (
     add_start, choose_category, enter_amount, enter_note, enter_tag,
@@ -773,7 +770,6 @@ def build_app():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, note_add_receive),
                 MessageHandler(filters.PHOTO | filters.Document.IMAGE, note_add_receive)
             ],
-            ADDING_NOTE_CAPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, note_add_receive_caption)],
             SEARCHING_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, note_search_receive)],
             EDITING_NOTE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, note_edit_receive)],
             EDITING_NOTE_CONTENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, note_edit_save)],
