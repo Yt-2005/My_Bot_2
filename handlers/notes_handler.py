@@ -28,6 +28,36 @@ EDITING_NOTE_ID = 5
 EDITING_NOTE_CONTENT = 6
 
 
+def _md(text: object) -> str:
+    """Escape user-controlled text for Telegram's legacy Markdown parser."""
+    return escape_markdown(str(text), version=1)
+
+
+def _note_preview(content: str, limit: int) -> str:
+    preview = content[:limit]
+    if len(content) > limit:
+        preview += "..."
+    return _md(preview)
+
+
+def _format_note_type(note, preview_limit: int) -> str:
+    if note["image_data"]:
+        note_type = "ðŸ–¼ Image"
+        if note["image_filename"]:
+            note_type += f" ({_md(note['image_filename'])})"
+        if note["content"]:
+            note_type += f": _{_note_preview(note['content'], preview_limit)}_"
+        else:
+            note_type += " (No caption)"
+    else:
+        note_type = "ðŸ“ Text"
+        if note["content"]:
+            note_type += f": _{_note_preview(note['content'], preview_limit)}_"
+        else:
+            note_type += " (Empty)"
+    return note_type
+
+
 # ─────────────────────────────────────────────
 # /note — ROUTER
 # ─────────────────────────────────────────────
@@ -66,7 +96,7 @@ async def note_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     current = note["content"] or "(No text)"
                     await update.message.reply_text(
                         f"✏️ *Editing Note #{note_id}*\n\n"
-                        f"Current content:\n_{current}_\n\n"
+                        f"Current content:\n_{_md(current)}_\n\n"
                         f"Please send the new content for this note:",
                         parse_mode=ParseMode.MARKDOWN
                     )
@@ -164,7 +194,7 @@ async def note_add_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
             await update.message.reply_text(
                 f"✅ *Text Note #{note_id} saved successfully!*\n\n"
-                f"📝 _{content}_\n\n"
+                f"📝 _{_md(content)}_\n\n"
                 f"📊 Total notes: {count}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[
@@ -193,7 +223,7 @@ async def note_add_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             count = count_notes(uid)
             await update.message.reply_text(
                 f"✅ *Image Note #{note_id} saved successfully!*\n\n"
-                f"🖼 `{escape_markdown(image_filename, version=2)}`\n"
+                f"🖼 `{_md(image_filename)}`\n"
                 f"📊 Total notes: {count}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[
@@ -218,7 +248,7 @@ async def note_add_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             count = count_notes(uid)
             await update.message.reply_text(
                 f"✅ *Image Note #{note_id} saved successfully!*\n\n"
-                f"🖼 `{escape_markdown(image_filename, version=2)}`\n"
+                f"🖼 `{_md(image_filename)}`\n"
                 f"📊 Total notes: {count}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[
@@ -278,8 +308,8 @@ async def note_add_receive_caption(update: Update, ctx: ContextTypes.DEFAULT_TYP
         if content:
             await update.message.reply_text(
                 f"✅ *Image Note #{note_id} saved successfully!*\n\n"
-                f"🖼 {pending['filename']}\n"
-                f"📝 Caption: _{content}_\n\n"
+                f"🖼 {_md(pending['filename'])}\n"
+                f"📝 Caption: _{_md(content)}_\n\n"
                 f"📊 Total notes: {count}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[
@@ -291,7 +321,7 @@ async def note_add_receive_caption(update: Update, ctx: ContextTypes.DEFAULT_TYP
         else:
             await update.message.reply_text(
                 f"✅ *Image Note #{note_id} saved successfully!*\n\n"
-                f"🖼 {pending['filename']}\n"
+                f"🖼 {_md(pending['filename'])}\n"
                 f"(No caption added)\n\n"
                 f"📊 Total notes: {count}",
                 parse_mode=ParseMode.MARKDOWN,
@@ -338,21 +368,7 @@ async def note_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         raw = note["created_at"]
         date = raw.strftime("%Y-%m-%d") if hasattr(raw, "strftime") else str(raw)[:10]
         
-        # Determine note type
-        if note["image_data"]:
-            note_type = "🖼 Image"
-            if note["image_filename"]:
-                note_type += f" ({note['image_filename']})"
-            if note["content"]:
-                note_type += f": _{note['content'][:50]}{'...' if len(note['content']) > 50 else ''}_"
-            else:
-                note_type += " (No caption)"
-        else:
-            note_type = "📝 Text"
-            if note["content"]:
-                note_type += f": _{note['content'][:50]}{'...' if len(note['content']) > 50 else ''}_"
-            else:
-                note_type += " (Empty)"
+        note_type = _format_note_type(note, 50)
         
         text += f"*#{note['id']}* — {date}\n{note_type}\n\n"
 
@@ -422,7 +438,7 @@ async def note_show_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if note["image_data"]:
         caption = f"*Note #{note['id']}* — {date}\n\n"
         if note["content"]:
-            caption += f"📝 {note['content']}"
+            caption += f"📝 {_md(note['content'])}"
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("✏️ Edit", callback_data=f"editnote|{note['id']}")],
             [InlineKeyboardButton("🔙 Back to List", callback_data="note_list")],
@@ -436,7 +452,7 @@ async def note_show_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     else:
         text = f"*Note #{note['id']}* — {date}\n\n"
-        text += note["content"] or "(Empty)"
+        text += _md(note["content"] or "(Empty)")
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("✏️ Edit", callback_data=f"editnote|{note['id']}")],
             [InlineKeyboardButton("🔙 Back to List", callback_data="note_list")],
@@ -467,7 +483,7 @@ async def edit_note_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(
         f"✏️ *Editing Note #{note_id}*\n\n"
-        f"Current content:\n_{current}_\n\n"
+        f"Current content:\n_{_md(current)}_\n\n"
         f"Send the new content for this note:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=back_button("note_list")
@@ -542,7 +558,7 @@ async def note_search_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if not results:
         await update.message.reply_text(
-            f"📭 *No results found*\n\nNo notes match \"{query_text}\".",
+            f"📭 *No results found*\n\nNo notes match \"{_md(query_text)}\".",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=back_button("menu_notes")
         )
@@ -552,20 +568,7 @@ async def note_search_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for note in results:
         raw = note["created_at"]
         date = raw.strftime("%Y-%m-%d") if hasattr(raw, "strftime") else str(raw)[:10]
-        if note["image_data"]:
-            note_type = "🖼 Image"
-            if note["image_filename"]:
-                note_type += f" ({note['image_filename']})"
-            if note["content"]:
-                note_type += f": _{note['content'][:30]}{'...' if len(note['content']) > 30 else ''}_"
-            else:
-                note_type += " (No caption)"
-        else:
-            note_type = "📝 Text"
-            if note["content"]:
-                note_type += f": _{note['content'][:30]}{'...' if len(note['content']) > 30 else ''}_"
-            else:
-                note_type += " (Empty)"
+        note_type = _format_note_type(note, 30)
         text += f"*#{note['id']}* — {date}\n{note_type}\n\n"
 
     if len(text) > 4000:
@@ -633,7 +636,7 @@ async def note_edit_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     current = note["content"] or "(No text)"
     await update.message.reply_text(
         f"✏️ *Editing Note #{note_id}*\n\n"
-        f"Current content:\n_{current}_\n\n"
+        f"Current content:\n_{_md(current)}_\n\n"
         f"Please send the new content for this note:",
         parse_mode=ParseMode.MARKDOWN
     )
@@ -663,7 +666,7 @@ async def note_edit_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if success:
         await update.message.reply_text(
             f"✅ *Note #{note_id} updated successfully!*\n\n"
-            f"📝 New content: _{new_content}_",
+            f"📝 New content: _{_md(new_content)}_",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("👁 View Note", callback_data=f"shownote|{note_id}"),
@@ -723,21 +726,7 @@ async def note_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 raw = note["created_at"]
                 date = raw.strftime("%Y-%m-%d") if hasattr(raw, "strftime") else str(raw)[:10]
                 
-                # Determine note type
-                if note["image_data"]:
-                    note_type = "🖼 Image"
-                    if note["image_filename"]:
-                        note_type += f" ({note['image_filename']})"
-                    if note["content"]:
-                        note_type += f": _{note['content'][:30]}{'...' if len(note['content']) > 30 else ''}_"
-                    else:
-                        note_type += " (No caption)"
-                else:
-                    note_type = "📝 Text"
-                    if note["content"]:
-                        note_type += f": _{note['content'][:30]}{'...' if len(note['content']) > 30 else ''}_"
-                    else:
-                        note_type += " (Empty)"
+                note_type = _format_note_type(note, 30)
                 
                 text += f"*#{note['id']}* — {date}\n{note_type}\n\n"
             
