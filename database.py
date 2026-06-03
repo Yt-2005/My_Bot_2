@@ -122,11 +122,17 @@ def add_note(user_id, content=None, image_data=None, image_filename=None):
     try:
         with db() as conn:
             cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO notes (user_id, content, image_data, image_filename) VALUES (%s, %s, %s, %s) RETURNING id", 
-                (user_id, content, image_data, image_filename)
-            )
-            note_id = cur.fetchone()['id']
+            if image_data is not None:
+                cur.execute(
+                    "INSERT INTO notes (user_id, content, image_data, image_filename) VALUES (%s, %s, %s, %s) RETURNING id",
+                    (user_id, content, image_data, image_filename),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO notes (user_id, content) VALUES (%s, %s) RETURNING id",
+                    (user_id, content),
+                )
+            note_id = cur.fetchone()["id"]
             conn.commit()
             return note_id
     except Exception as e:
@@ -189,7 +195,7 @@ def get_recent_errors(limit=20):
 # ── Reminders ──────────────────────────────────────────────────────
 def send_reminders_db(hour):
     with db() as conn:
-        rows = _safe_query(conn, "SELECT user_id FROM users WHERE daily_reminder = TRUE AND reminder_time = %s", (hour,))
+        rows = _safe_query(conn, "SELECT user_id FROM users WHERE COALESCE(daily_reminder, 0) = 1 AND reminder_time = %s", (hour,))
         return [row['user_id'] for row in rows]
 
 

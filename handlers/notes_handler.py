@@ -11,6 +11,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from telegram.constants import ParseMode
+from telegram.helpers import escape_markdown
 
 from database import add_note, get_note, get_notes, delete_note, count_notes, search_notes, update_note, ensure_user, log_error
 from utils import notes_keyboard, back_button, is_rate_limited
@@ -192,7 +193,7 @@ async def note_add_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             count = count_notes(uid)
             await update.message.reply_text(
                 f"✅ *Image Note #{note_id} saved successfully!*\n\n"
-                f"🖼 {image_filename}\n"
+                f"🖼 `{escape_markdown(image_filename, version=2)}`\n"
                 f"📊 Total notes: {count}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[
@@ -217,7 +218,7 @@ async def note_add_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             count = count_notes(uid)
             await update.message.reply_text(
                 f"✅ *Image Note #{note_id} saved successfully!*\n\n"
-                f"🖼 {image_filename}\n"
+                f"🖼 `{escape_markdown(image_filename, version=2)}`\n"
                 f"📊 Total notes: {count}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[
