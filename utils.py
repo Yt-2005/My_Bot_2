@@ -54,6 +54,71 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
     ])
 
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    """The main menu shown after /start, filtered by dashboard feature toggles."""
+    try:
+        from database import get_bot_features
+        visible = get_bot_features()
+    except Exception as e:
+        logger.warning(f"Feature visibility unavailable: {e}")
+        visible = {}
+
+    items = [
+        ("imagegen", "ðŸŽ¨ AI Image Gen", "menu_imagegen"),
+        ("upscale", "âœ¨ AI Upscaler", "menu_upscale"),
+        ("chat", "ðŸ¤– AI Chat", "menu_chat"),
+        ("notes", "ðŸ“ My Notes", "menu_notes"),
+        ("expenses", "ðŸ’° Expenses", "menu_expenses"),
+        ("ai_finance", "ðŸ¤– AI Finance", "menu_ai_finance"),
+        ("pdf", "ðŸ“„ PDF Tools", "menu_pdf"),
+        ("settings", "âš™ï¸ Settings", "menu_settings"),
+        ("calendar", "ðŸ“… Khmer Calendar", "menu_calendar"),
+        ("help", "â“ Help", "menu_help"),
+    ]
+
+    buttons = [
+        InlineKeyboardButton(label, callback_data=callback)
+        for key, label, callback in items
+        if visible.get(key, True)
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    if not rows:
+        rows = [[InlineKeyboardButton("â“ Help", callback_data="menu_help")]]
+    return InlineKeyboardMarkup(rows)
+
+
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    """The main menu shown after /start, filtered by dashboard feature toggles."""
+    try:
+        from database import get_bot_features
+        visible = get_bot_features()
+    except Exception as e:
+        logger.warning(f"Feature visibility unavailable: {e}")
+        visible = {}
+
+    items = [
+        ("imagegen", "AI Image Gen", "menu_imagegen"),
+        ("upscale", "AI Upscaler", "menu_upscale"),
+        ("chat", "AI Chat", "menu_chat"),
+        ("notes", "My Notes", "menu_notes"),
+        ("expenses", "Expenses", "menu_expenses"),
+        ("ai_finance", "AI Finance", "menu_ai_finance"),
+        ("pdf", "PDF Tools", "menu_pdf"),
+        ("settings", "Settings", "menu_settings"),
+        ("calendar", "Khmer Calendar", "menu_calendar"),
+        ("help", "Help", "menu_help"),
+    ]
+
+    buttons = [
+        InlineKeyboardButton(label, callback_data=callback)
+        for key, label, callback in items
+        if visible.get(key, True)
+    ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    if not rows:
+        rows = [[InlineKeyboardButton("Help", callback_data="menu_help")]]
+    return InlineKeyboardMarkup(rows)
+
 
 def image_style_keyboard(prompt: str) -> InlineKeyboardMarkup:
     """Style selector for image generation."""

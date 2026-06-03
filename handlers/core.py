@@ -126,6 +126,29 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
+    feature_by_callback = {
+        "menu_imagegen": "imagegen",
+        "menu_upscale": "upscale",
+        "menu_chat": "chat",
+        "menu_notes": "notes",
+        "menu_expenses": "expenses",
+        "menu_ai_finance": "ai_finance",
+        "menu_pdf": "pdf",
+        "menu_settings": "settings",
+        "menu_calendar": "calendar",
+        "menu_help": "help",
+    }
+    feature_key = feature_by_callback.get(data)
+    if feature_key:
+        try:
+            from database import get_bot_features
+            if not get_bot_features().get(feature_key, True):
+                await query.answer("This option is currently hidden.", show_alert=True)
+                await _menu_main(query, ctx)
+                return
+        except Exception as e:
+            logger.warning(f"Feature visibility check failed: {e}")
+
     handlers = {
         "menu_main":       _menu_main,
         "cancel":          _menu_main,

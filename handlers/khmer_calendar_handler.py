@@ -329,10 +329,16 @@ def get_seil_days_this_month(year: int, month: int) -> list:
     result = []
     for day_num in range(1, num_days + 1):
         d = date(year, month, day_num)
-        lunar = gregorian_to_lunar(d)
-        if lunar["is_seil"]:
+        lunar = get_display_seil_lunar(d)
+        if lunar:
             result.append((d, lunar))
     return result
+
+
+def get_display_seil_lunar(d: date) -> dict | None:
+    """Show Buddhist precept days one Gregorian day after the lunar seil day."""
+    lunar = gregorian_to_lunar(d - timedelta(days=1))
+    return lunar if lunar["is_seil"] else None
 
 
 def _seil_moon_label(lunar: dict) -> str:
@@ -365,7 +371,7 @@ def format_today_khmer(d: date = None) -> str:
 
     weekday_kh = KHMER_WEEKDAYS[d.weekday()]
     month_kh   = KHMER_MONTHS[d.month]
-    seil_badge = "\n    🙏 *ថ្ងៃសីល* — ថ្ងៃប្រតិបត្តិធម៌" if lunar["is_seil"] else ""
+    seil_badge = "\n    🙏 *ថ្ងៃសីល* — ថ្ងៃប្រតិបត្តិធម៌" if get_display_seil_lunar(d) else ""
 
     text = (
         f"📅  *ថ្ងៃ{weekday_kh}*\n"
@@ -425,7 +431,7 @@ def format_month_calendar(year: int, month: int) -> str:
         is_holiday   = day_num in holidays_map
         is_full_moon = (lunar["moon_phase"] == 0 and lunar["phase_day"] == 15)
         is_new_moon  = lunar["is_last_roch"]
-        is_seil      = lunar["is_seil"]
+        is_seil      = bool(get_display_seil_lunar(d))
 
         if is_today:
             marker = "◈"
@@ -477,12 +483,13 @@ def format_month_calendar(year: int, month: int) -> str:
                 f"    {badge}  ·  {wday_kh}\n"
                 f"    🌙 {lunar['day']} {lunar['month']}"))
 
-        if lunar["is_seil"] and delta >= 0:
-            seil_label = _seil_moon_label(lunar)
+        seil_lunar = get_display_seil_lunar(d)
+        if seil_lunar and delta >= 0:
+            seil_label = _seil_moon_label(seil_lunar)
             events.append((d, 1,
                 f"🙏  *ថ្ងៃសីល* — {seil_label}\n"
                 f"    {badge}  ·  {wday_kh}\n"
-                f"    {lunar['day']} {lunar['month']}"))
+                f"    {seil_lunar['day']} {seil_lunar['month']}"))
 
     events.sort(key=lambda x: (x[0], x[1]))
     if events:
@@ -502,8 +509,8 @@ def format_seil_view() -> str:
     check = today
 
     while found < 8:
-        lunar = gregorian_to_lunar(check)
-        if lunar["is_seil"]:
+        lunar = get_display_seil_lunar(check)
+        if lunar:
             delta    = (check - today).days
             wday_kh  = KHMER_WEEKDAYS[check.weekday()]
             month_kh = KHMER_MONTHS[check.month]
@@ -569,7 +576,7 @@ def format_date_search(d: date) -> str:
     else:
         when = f"⬛ {to_khmer_num(abs(delta))} ថ្ងៃមុន"
 
-    seil_badge = "\n🙏  *ថ្ងៃសីល* — ថ្ងៃប្រតិបត្តិធម៌" if lunar["is_seil"] else ""
+    seil_badge = "\n🙏  *ថ្ងៃសីល* — ថ្ងៃប្រតិបត្តិធម៌" if get_display_seil_lunar(d) else ""
 
     text = (
         f"🔍  *លទ្ធផលស្វែងរក*\n"
@@ -696,7 +703,7 @@ async def khmer_calendar_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
             l      = gregorian_to_lunar(day)
             wday   = KHMER_WEEKDAYS[day.weekday()]
             mon_kh = KHMER_MONTHS[day.month]
-            seil_t = "  🙏" if l["is_seil"] else ""
+            seil_t = "  🙏" if get_display_seil_lunar(day) else ""
 
             if i == 0:
                 lines.append(
@@ -966,7 +973,7 @@ async def calendar_convert_receive(update: Update, ctx: ContextTypes.DEFAULT_TYP
             sak     = get_sak_year(era["buddhist_era"])
             wday_kh = KHMER_WEEKDAYS[d.weekday()]
             mon_kh  = KHMER_MONTHS[d.month]
-            seil_note = "\n🙏  *ថ្ងៃសីល* — ថ្ងៃប្រតិបត្តិធម៌" if lunar["is_seil"] else ""
+            seil_note = "\n🙏  *ថ្ងៃសីល* — ថ្ងៃប្រតិបត្តិធម៌" if get_display_seil_lunar(d) else ""
             holiday = get_today_holiday(d)
             holiday_note = f"\n{holiday['emoji']}  *{holiday['name']}*" if holiday else ""
 

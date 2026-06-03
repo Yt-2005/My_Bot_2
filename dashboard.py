@@ -374,6 +374,40 @@ def _json_vals(rows, key):
     return json.dumps([float(r[key]) if r[key] is not None else 0 for r in rows])
 
 
+BOT_FEATURES = [
+    ("imagegen", "AI Image Gen", "Image generation menu"),
+    ("upscale", "AI Upscaler", "Image upscaling menu"),
+    ("chat", "AI Chat", "Chat conversation menu"),
+    ("notes", "My Notes", "Personal notes menu"),
+    ("expenses", "Expenses", "Expense tracker menu"),
+    ("ai_finance", "AI Finance", "Financial advice menu"),
+    ("pdf", "PDF Tools", "PDF utilities menu"),
+    ("settings", "Settings", "Language, PIN, reminder, clear chat"),
+    ("calendar", "Khmer Calendar", "Khmer calendar and Buddhist days"),
+    ("help", "Help", "Help command menu"),
+]
+
+
+def _ensure_bot_features(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS bot_features (
+            feature_key TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            is_visible BOOLEAN NOT NULL DEFAULT TRUE,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+    for key, label, _ in BOT_FEATURES:
+        cur.execute(
+            """
+            INSERT INTO bot_features (feature_key, label, is_visible)
+            VALUES (%s, %s, TRUE)
+            ON CONFLICT (feature_key) DO UPDATE SET label = EXCLUDED.label
+            """,
+            (key, label),
+        )
+
+
 # ─────────────────────────────────────────────────────────────────
 # REGISTER ALL ROUTES
 # ─────────────────────────────────────────────────────────────────
@@ -1474,7 +1508,33 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
             uid = request.form.get("uid", "").strip()
             msg = request.form.get("msg", "").strip()
 
-            if action == "send" and uid and msg and _bot_app:
+            if action in ("feature_show", "feature_hide"):
+                feature_key = request.form.get("feature_key", "").strip()
+                is_visible = action == "feature_show"
+                conn = db()
+                try:
+                    cur = conn.cursor()
+                    _ensure_bot_features(cur)
+                    valid_keys = {key for key, _, _ in BOT_FEATURES}
+                    if feature_key not in valid_keys:
+                        raise ValueError("Unknown feature")
+                    cur.execute(
+                        "UPDATE bot_features SET is_visible=%s, updated_at=NOW() WHERE feature_key=%s",
+                        (is_visible, feature_key),
+                    )
+                    conn.commit()
+                    result = (
+                        '<div class="alert alert-success">✅ Feature updated: '
+                        + feature_key + (' is visible' if is_visible else ' is hidden')
+                        + '</div>'
+                    )
+                except Exception as e:
+                    conn.rollback()
+                    result = f'<div class="alert alert-error">❌ {e}</div>'
+                finally:
+                    conn.close()
+
+            elif action == "send" and uid and msg and _bot_app:
                 import asyncio
                 async def _s():
                     await _bot_app.bot.send_message(chat_id=int(uid), text=f"📬 *Admin:* {msg}", parse_mode="Markdown")
@@ -1511,6 +1571,37 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
                 finally:
                     conn.close()
 
+        conn = db()
+        try:
+            cur = conn.cursor()
+            _ensure_bot_features(cur)
+            conn.commit()
+            features = _safe_query(conn, "SELECT feature_key, label, is_visible, updated_at FROM bot_features ORDER BY label")
+        finally:
+            conn.close()
+
+        feature_rows = ""
+        feature_meta = {key: desc for key, _, desc in BOT_FEATURES}
+        for feature in features:
+            visible = bool(feature["is_visible"])
+            action = "feature_hide" if visible else "feature_show"
+            button = "Hide" if visible else "Show"
+            btn_class = "btn-yellow" if visible else "btn-green"
+            badge = '<span class="badge bg">Visible</span>' if visible else '<span class="badge br">Hidden</span>'
+            feature_rows += f"""
+              <tr>
+                <td><strong>{feature['label']}</strong><br><span class="text-muted" style="font-size:11px">{feature_meta.get(feature['feature_key'], '')}</span></td>
+                <td>{badge}</td>
+                <td class="text-muted mono">{str(feature['updated_at'])[:16]}</td>
+                <td>
+                  <form method="POST" style="display:inline">
+                    <input type="hidden" name="action" value="{action}">
+                    <input type="hidden" name="feature_key" value="{feature['feature_key']}">
+                    <button type="submit" class="btn {btn_class} btn-xs">{button}</button>
+                  </form>
+                </td>
+              </tr>"""
+
         bot_status = "🟢 ONLINE" if _bot_app else "🔴 OFFLINE"
         content = f"""
         <div class="page-title">Bot Control</div>
@@ -1544,6 +1635,14 @@ def register_dashboard(flask_app: Flask, secret_key: str = "bot-secret-2024",
               <button type="submit" class="btn btn-green">✅ Unban User</button>
             </form>
           </div>
+        </div>
+        <div class="section">
+          <h3>👁 Telegram Menu Visibility</h3>
+          <p style="color:var(--muted);font-size:12px;margin-bottom:12px">Hide or show options in the Telegram bot main menu.</p>
+          <table>
+            <thead><tr><th>Feature</th><th>Status</th><th>Updated</th><th>Action</th></tr></thead>
+            <tbody>{feature_rows}</tbody>
+          </table>
         </div>
         <div class="section">
           <h3>📋 Telegram Admin Commands Reference</h3>

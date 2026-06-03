@@ -61,6 +61,12 @@ def init_db():
              user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
              message TEXT, is_bot BOOLEAN, created_at TIMESTAMPTZ DEFAULT NOW()
          )""",
+        """CREATE TABLE IF NOT EXISTS bot_features (
+             feature_key TEXT PRIMARY KEY,
+             label TEXT NOT NULL,
+             is_visible BOOLEAN NOT NULL DEFAULT TRUE,
+             updated_at TIMESTAMPTZ DEFAULT NOW()
+         )""",
     ]
     migrations = [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS pin TEXT",
@@ -84,7 +90,88 @@ def init_db():
                     cur.execute(mig)
                 except Exception as e:
                     logger.warning(f"Migration: {e}")
+            seed_bot_features(cur)
             conn.commit()
+
+
+BOT_FEATURES = [
+    ("imagegen", "AI Image Gen"),
+    ("upscale", "AI Upscaler"),
+    ("chat", "AI Chat"),
+    ("notes", "My Notes"),
+    ("expenses", "Expenses"),
+    ("ai_finance", "AI Finance"),
+    ("pdf", "PDF Tools"),
+    ("settings", "Settings"),
+    ("calendar", "Khmer Calendar"),
+    ("help", "Help"),
+]
+
+
+def seed_bot_features(cur):
+    for key, label in BOT_FEATURES:
+        cur.execute(
+            """
+            INSERT INTO bot_features (feature_key, label, is_visible)
+            VALUES (%s, %s, TRUE)
+            ON CONFLICT (feature_key) DO UPDATE SET label = EXCLUDED.label
+            """,
+            (key, label),
+        )
+
+
+def get_bot_features() -> dict[str, bool]:
+    try:
+        with db() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_features (
+                    feature_key TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    is_visible BOOLEAN NOT NULL DEFAULT TRUE,
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            seed_bot_features(cur)
+            cur.execute("SELECT feature_key, is_visible FROM bot_features")
+            rows = cur.fetchall()
+            conn.commit()
+            values = {row["feature_key"]: bool(row["is_visible"]) for row in rows}
+            for key, _ in BOT_FEATURES:
+                values.setdefault(key, True)
+            return values
+    except Exception as e:
+        logger.warning(f"Feature visibility fallback: {e}")
+        return {key: True for key, _ in BOT_FEATURES}
+
+
+def set_bot_feature_visibility(feature_key: str, is_visible: bool) -> bool:
+    labels = dict(BOT_FEATURES)
+    if feature_key not in labels:
+        return False
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bot_features (
+                feature_key TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                is_visible BOOLEAN NOT NULL DEFAULT TRUE,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        cur.execute(
+            """
+            INSERT INTO bot_features (feature_key, label, is_visible, updated_at)
+            VALUES (%s, %s, %s, NOW())
+            ON CONFLICT (feature_key) DO UPDATE SET
+                label = EXCLUDED.label,
+                is_visible = EXCLUDED.is_visible,
+                updated_at = NOW()
+            """,
+            (feature_key, labels[feature_key], is_visible),
+        )
+        conn.commit()
+        return True
 
 
 def _safe_query(conn, sql, params=None):
