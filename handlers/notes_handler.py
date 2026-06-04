@@ -385,14 +385,14 @@ async def note_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Handle both direct command and callback
     if update.message:
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-        else:
-            try:
-                await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-            except error.BadRequest as e:
-                if "There is no text in the message to edit" in str(e):
-                    await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-                else:
-                    raise
+    else:
+        try:
+            await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+        except error.BadRequest as e:
+            if "There is no text in the message to edit" in str(e):
+                await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+            else:
+                raise
 
     return ConversationHandler.END
 
@@ -457,20 +457,23 @@ async def note_show_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
             reply_markup=kb,
         )
+    else:
+        # Try to edit the message, but if it's not a text message (e.g., photo),
+        # send a new message instead
+        text = f"*Note #{note['id']}* — {date}\n\n"
+        text += _md(note["content"] or "(Empty)")
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✏️ Edit", callback_data=f"editnote|{note['id']}")],
+            [InlineKeyboardButton("🔙 Back to List", callback_data="note_list")],
+        ])
+        try:
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+        except error.BadRequest as e:
+            if "There is no text in the message to edit" in str(e):
+                await query.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
             else:
-                text = f"*Note #{note['id']}* — {date}\n\n"
-                text += _md(note["content"] or "(Empty)")
-                kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✏️ Edit", callback_data=f"editnote|{note['id']}")],
-                    [InlineKeyboardButton("🔙 Back to List", callback_data="note_list")],
-                ])
-                try:
-                    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
-                except error.BadRequest as e:
-                    if "There is no text in the message to edit" in str(e):
-                        await query.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
-                    else:
-                        raise
+                raise
+
 
 
 async def edit_note_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -538,37 +541,37 @@ async def delete_note_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if success:
         notes = get_notes(uid)
         if notes:
-                try:
-                    await query.edit_message_text(
+            try:
+                await query.edit_message_text(
+                    f"✅ *Note #{note_id} deleted!*\n\nTap another note to delete:",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=notes_keyboard(notes)
+                )
+            except error.BadRequest as e:
+                if "There is no text in the message to edit" in str(e):
+                    await query.message.reply_text(
                         f"✅ *Note #{note_id} deleted!*\n\nTap another note to delete:",
                         parse_mode=ParseMode.MARKDOWN,
                         reply_markup=notes_keyboard(notes)
                     )
-                except error.BadRequest as e:
-                    if "There is no text in the message to edit" in str(e):
-                        await query.message.reply_text(
-                            f"✅ *Note #{note_id} deleted!*\n\nTap another note to delete:",
-                            parse_mode=ParseMode.MARKDOWN,
-                            reply_markup=notes_keyboard(notes)
-                        )
-                    else:
-                        raise
+                else:
+                    raise
         else:
-                try:
-                    await query.edit_message_text(
+            try:
+                await query.edit_message_text(
+                    "✅ *Note deleted!*\n\nYou have no more notes.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=back_button("menu_main")
+                )
+            except error.BadRequest as e:
+                if "There is no text in the message to edit" in str(e):
+                    await query.message.reply_text(
                         "✅ *Note deleted!*\n\nYou have no more notes.",
                         parse_mode=ParseMode.MARKDOWN,
                         reply_markup=back_button("menu_main")
                     )
-                except error.BadRequest as e:
-                    if "There is no text in the message to edit" in str(e):
-                        await query.message.reply_text(
-                            "✅ *Note deleted!*\n\nYou have no more notes.",
-                            parse_mode=ParseMode.MARKDOWN,
-                            reply_markup=back_button("menu_main")
-                        )
-                    else:
-                        raise
+                else:
+                    raise
     else:
         await query.answer("❌ Note not found or already deleted.", show_alert=True)
 
@@ -856,38 +859,58 @@ async def note_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 else:
                     raise
     elif data == "note_search":
-            try:
-                await query.edit_message_text(
+        try:
+            await query.edit_message_text(
+                "🔍 *Search Notes*\n\nEnter a keyword to search through your notes:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=back_button("menu_notes")
+            )
+        except error.BadRequest as e:
+            if "There is no text in the message to edit" in str(e):
+                await query.message.reply_text(
                     "🔍 *Search Notes*\n\nEnter a keyword to search through your notes:",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=back_button("menu_notes")
                 )
-            except error.BadRequest as e:
-                if "There is no text in the message to edit" in str(e):
-                    await query.message.reply_text(
-                        "🔍 *Search Notes*\n\nEnter a keyword to search through your notes:",
-                        parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=back_button("menu_notes")
-                    )
-                else:
-                    raise
+            else:
+                raise
         ctx.user_data["searching_notes"] = True
         return SEARCHING_NOTES
 
     elif data == "note_edit":
         notes = get_notes(uid)
         if not notes:
-            await query.edit_message_text(
-                "📭 *No notes to edit.*\n\nUse /note add to create a note first.",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=back_button("menu_notes")
-            )
+            try:
+                await query.edit_message_text(
+                    "📭 *No notes to edit.*\n\nUse /note add to create a note first.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=back_button("menu_notes")
+                )
+            except error.BadRequest as e:
+                if "There is no text in the message to edit" in str(e):
+                    await query.message.reply_text(
+                        "📭 *No notes to edit.*\n\nUse /note add to create a note first.",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=back_button("menu_notes")
+                    )
+                else:
+                    raise
         else:
-            await query.edit_message_text(
-                "✏️ *Edit a Note*\n\nTap the note you want to edit:",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=notes_keyboard(notes, show_edit=True)
-            )
+            try:
+                await query.edit_message_text(
+                    "✏️ *Edit a Note*\n\nTap the note you want to edit:",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=notes_keyboard(notes, show_edit=True)
+                )
+            except error.BadRequest as e:
+                if "There is no text in the message to edit" in str(e):
+                    await query.message.reply_text(
+                        "✏️ *Edit a Note*\n\nTap the note you want to edit:",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=notes_keyboard(notes, show_edit=True)
+                    )
+                else:
+                    raise
             ctx.user_data["editing_note"] = True
             return EDITING_NOTE_ID
     return ConversationHandler.END
