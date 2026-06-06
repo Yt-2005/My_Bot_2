@@ -4,6 +4,7 @@ All menu_ callbacks handled here with full Back button navigation.
 """
 
 import logging
+from telegram import error
 from telegram.constants import ParseMode
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
@@ -189,16 +190,22 @@ async def _menu_imagegen(query, ctx):
         [InlineKeyboardButton("🎨 Generate Image", switch_inline_query_current_chat="/imagine ")],
         [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
     ])
-    await query.edit_message_text(
-        "🎨 *AI Image Generator*\n\n"
-        "Use /imagine followed by your prompt.\n\n"
-        "Example: `/imagine a sunset over mountains`\n\n"
-        "Available styles:\n"
-        "🌄 Realistic • 🎌 Anime • 🌆 Cyberpunk\n"
-        "🕹 Pixel Art • 🎲 3D Render",
-        parse_mode="Markdown",
-        reply_markup=kb,
-    )
+    try:
+        await query.edit_message_text(
+            "🎨 *AI Image Generator*\n\n"
+            "Use /imagine followed by your prompt.\n\n"
+            "Example: `/imagine a sunset over mountains`\n\n"
+            "Available styles:\n"
+            "🌄 Realistic • 🎌 Anime • 🌆 Cyberpunk\n"
+            "🕹 Pixel Art • 🎲 3D Render",
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+    except error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            pass  # Ignore if message content is the same
+        else:
+            raise
 
 
 async def _menu_upscale(query, ctx):
@@ -206,16 +213,22 @@ async def _menu_upscale(query, ctx):
         [InlineKeyboardButton("✨ Start Upscaling", switch_inline_query_current_chat="/upscale")],
         [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
     ])
-    await query.edit_message_text(
-        "✨ *AI Image Upscaler*\n\n"
-        "Send /upscale then send a photo to enhance its resolution.\n\n"
-        "Great for:\n"
-        "• Low-res photos 📷\n"
-        "• Old family pictures 🖼\n"
-        "• Blurry screenshots 📱",
-        parse_mode="Markdown",
-        reply_markup=kb,
-    )
+    try:
+        await query.edit_message_text(
+            "✨ *AI Image Upscaler*\n\n"
+            "Send /upscale then send a photo to enhance its resolution.\n\n"
+            "Great for:\n"
+            "• Low-res photos 📷\n"
+            "• Old family pictures 🖼\n"
+            "• Blurry screenshots 📱",
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+    except error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            pass  # Ignore if message content is the same
+        else:
+            raise
 
 
 async def _menu_chat(query, ctx):
@@ -224,15 +237,21 @@ async def _menu_chat(query, ctx):
         [InlineKeyboardButton("🧹 Clear Memory", callback_data="menu_clearchat")],
         [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
     ])
-    await query.edit_message_text(
-        "🤖 *AI Chat*\n\n"
-        "Have a conversation with AI.\n"
-        "The bot remembers your last 10 messages.\n\n"
-        "Use /chat to start chatting.\n"
-        "Use /clearchat to reset memory.",
-        parse_mode="Markdown",
-        reply_markup=kb,
-    )
+    try:
+        await query.edit_message_text(
+            "🤖 *AI Chat*\n\n"
+            "Have a conversation with AI.\n"
+            "The bot remembers your last 10 messages.\n\n"
+            "Use /chat to start chatting.\n"
+            "Use /clearchat to reset memory.",
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+    except error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            pass  # Ignore if message content is the same
+        else:
+            raise
 
 
 async def _menu_notes(query, ctx):
@@ -243,17 +262,23 @@ async def _menu_notes(query, ctx):
         ],
         [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
     ])
-    await query.edit_message_text(
-        "📝 *My Notes*\n\n"
-        "Save and manage your personal notes (text or images).\n\n"
-        "Commands:\n"
-        "• /note — Open notes menu\n"
-        "• Add, list, or delete notes\n"
-        "• Send photos/images to save as image notes\n"
-        "• Add captions to label your images",
-        parse_mode="Markdown",
-        reply_markup=kb,
-    )
+    try:
+        await query.edit_message_text(
+            "📝 *My Notes*\n\n"
+            "Save and manage your personal notes (text or images).\n\n"
+            "Commands:\n"
+            "• /note — Open notes menu\n"
+            "• Add, list, or delete notes\n"
+            "• Send photos/images to save as image notes\n"
+            "• Add captions to label your images",
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+    except error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            pass  # Ignore if message content is the same
+        else:
+            raise
 
 
 async def _menu_expenses(query, ctx):
@@ -279,21 +304,27 @@ async def _menu_expenses(query, ctx):
         ],
         [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
     ])
-    await query.edit_message_text(
-        "💰 *Expense Tracker*\n\n"
-        "Track your spending easily:\n\n"
-        "• /add — Record new expense\n"
-        "• /today — Today's total\n"
-        "• /month — Monthly breakdown\n"
-        "• /budget — Set spending limit\n"
-        "• /compare — Compare months\n"
-        "• /recurring — Recurring expenses\n"
-        "• /date — Search by date\n"
-        "• /tags — Search by tag\n"
-        "• /delete — Delete expense",
-        parse_mode="Markdown",
-        reply_markup=kb,
-    )
+    try:
+        await query.edit_message_text(
+            "💰 *Expense Tracker*\n\n"
+            "Track your spending easily:\n\n"
+            "• /add — Record new expense\n"
+            "• /today — Today's total\n"
+            "• /month — Monthly breakdown\n"
+            "• /budget — Set spending limit\n"
+            "• /compare — Compare months\n"
+            "• /recurring — Recurring expenses\n"
+            "• /date — Search by date\n"
+            "• /tags — Search by tag\n"
+            "• /delete — Delete expense",
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+    except error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            pass  # Ignore if message content is the same
+        else:
+            raise
 
 
 async def _menu_ai_finance(query, ctx):
@@ -301,16 +332,22 @@ async def _menu_ai_finance(query, ctx):
         [InlineKeyboardButton("🤖 Get AI Advice", switch_inline_query_current_chat="/ai")],
         [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
     ])
-    await query.edit_message_text(
-        "🤖 *AI Financial Advisor*\n\n"
-        "Get personalized financial insights based on your spending data.\n\n"
-        "Use /ai to ask questions like:\n"
-        "• Where am I spending the most?\n"
-        "• How can I save more this month?\n"
-        "• Am I close to my budget?",
-        parse_mode="Markdown",
-        reply_markup=kb,
-    )
+    try:
+        await query.edit_message_text(
+            "🤖 *AI Financial Advisor*\n\n"
+            "Get personalized financial insights based on your spending data.\n\n"
+            "Use /ai to ask questions like:\n"
+            "• Where am I spending the most?\n"
+            "• How can I save more this month?\n"
+            "• Am I close to my budget?",
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+    except error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            pass  # Ignore if message content is the same
+        else:
+            raise
 
 
 async def _menu_pdf(query, ctx):
@@ -324,15 +361,21 @@ async def _menu_pdf(query, ctx):
         ],
         [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
     ])
-    await query.edit_message_text(
-        "📄 *PDF Tools*\n\n"
-        "Choose what you want to do:\n\n"
-        "📝 *Text to PDF* — Convert text into a PDF file\n"
-        "🖼 *Image to PDF* — Convert a photo into a PDF file\n"
-        "📄 *PDF to Text* — Extract text from a PDF file",
-        parse_mode="Markdown",
-        reply_markup=kb,
-    )
+    try:
+        await query.edit_message_text(
+            "📄 *PDF Tools*\n\n"
+            "Choose what you want to do:\n\n"
+            "📝 *Text to PDF* — Convert text into a PDF file\n"
+            "🖼 *Image to PDF* — Convert a photo into a PDF file\n"
+            "📄 *PDF to Text* — Extract text from a PDF file",
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+    except error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            pass  # Ignore if message content is the same
+        else:
+            raise
 
 
 async def _menu_settings(query, ctx):
@@ -347,23 +390,35 @@ async def _menu_settings(query, ctx):
         ],
         [InlineKeyboardButton("🔙 Back", callback_data="menu_main")],
     ])
-    await query.edit_message_text(
-        "⚙️ *Settings*\n\n"
-        "• /lang — Change language\n"
-        "• /setpin — Set a PIN lock for expenses\n"
-        "• /reminder — Set daily expense reminder\n"
-        "• /clearchat — Clear AI chat memory",
-        parse_mode="Markdown",
-        reply_markup=kb,
-    )
+    try:
+        await query.edit_message_text(
+            "⚙️ *Settings*\n\n"
+            "• /lang — Change language\n"
+            "• /setpin — Set a PIN lock for expenses\n"
+            "• /reminder — Set daily expense reminder\n"
+            "• /clearchat — Clear AI chat memory",
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+    except error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            pass  # Ignore if message content is the same
+        else:
+            raise
 
 
 async def _menu_help(query, ctx):
-    await query.edit_message_text(
-        _help_text(),
-        parse_mode="Markdown",
-        reply_markup=back_button("menu_main"),
-    )
+    try:
+        await query.edit_message_text(
+            _help_text(),
+            parse_mode="Markdown",
+            reply_markup=back_button("menu_main"),
+        )
+    except error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            pass  # Ignore if message content is the same
+        else:
+            raise
 
 
 async def _menu_calendar(query, ctx):
